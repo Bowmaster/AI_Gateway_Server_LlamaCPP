@@ -1,0 +1,4 @@
+__pycache__
+ai_lab_cpp
+models/*
+llama.cpp/*
