@@ -944,5 +944,21 @@ I want to...
 
 ---
 
+## Testing Systems
+**System 1 (Custom gaming PC)**
+CPU: AMD 5800 XT (8 core)
+GPU:  Nvidia 5700 TI (16 GB VRam)
+Ram:  32 GB 
+
+**System 2 (DL380 Gen9)**
+CPU:  Dual CPU E5-2680 v4 (28 total cores, 56 total threads)
+GPU: None (But considering purchasing a low profile card that will fit in a 2u chassis)
+Memory: 256
+
+## Code Style
+1. We should focus on safe, reliable, guardrailed executuion first and foremost.
+2. Code should be clear, succinct, and avoid being needlessly complex, so long as the style item from 1. is adhered to.
+
 **Last Updated**: 2026-01-04
 **Scope**: Optimized for Claude Code agentic development, architectural improvements, and extensibility.
+
