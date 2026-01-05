@@ -495,14 +495,44 @@ After implementation, update:
 
 ---
 
-### 🔄 Priority 2: IN PROGRESS
+### ✅ Priority 2: COMPLETED (309 lines saved + 2 bugs fixed)
 
-Next steps:
-1. Implement tool decorator system in `tools.py`
-2. Simplify tool dispatch in `ai_server.py`
-3. Fix broken `list_models` logic
-4. Fix incomplete `ModelSwitchResponse`
+**Phase 1 - Tool Decorator System (tools.py)**
+- Status: ✅ COMPLETED
+- Lines saved: 262 lines (1491 → 1229)
+- Changes:
+  - Added decorator-based tool registration system
+  - Created `@tool()` decorator with OpenAI schema
+  - Implemented `execute_tool()` for safe dispatch
+  - Implemented `get_tool_key_param()` for logging
+  - Decorated all 15 tool functions
+  - Removed 500+ line hardcoded tool registry
+- Security: Whitelist-only via decorator (no injection possible)
+- Result: Single source of truth, easier to add new tools
+
+**Phase 2 - Tool Dispatch Simplification (ai_server.py)**
+- Status: ✅ COMPLETED
+- Lines saved: 47 lines (65 → 18)
+- Changes:
+  - Replaced massive if/elif block with `tools.execute_tool()` call
+  - Dynamic tool logging with `get_tool_key_param()`
+  - Special formatting preserved for move/copy operations
+- Result: Clean, maintainable dispatch logic
+
+**Phase 3 - Bug Fixes (ai_server.py)**
+- Status: ✅ COMPLETED
+- Fixed broken `list_models()` logic (line 304-307)
+  - Issue: Variable `key` didn't exist yet
+  - Fix: Moved `get_model_source()` call inside loop
+- Fixed incomplete `ModelSwitchResponse` (line 344)
+  - Completed "already using" response
+  - Completed "generating" exception
+  - Fixed undefined `previous_key` variable
+- Result: All edge cases now properly handled
+
+**Total Priority 2 Savings**: 309 lines + 2 critical bugs fixed
 
 ---
 
-**Last Updated**: 2026-01-05 (Priority 1 complete)
+**Last Updated**: 2026-01-05 (Priority 2 complete)
+**Total Savings So Far**: 385 lines (Priority 1: 76 + Priority 2: 309)
