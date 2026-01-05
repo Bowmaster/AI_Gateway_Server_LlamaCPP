@@ -280,69 +280,6 @@ class LlamaServerManager:
         except requests.exceptions.RequestException:
             return False
     
-    def load_model(self, model_path: str) -> Dict[str, Any]:
-        """
-        Load a new model using the /v1/models/load endpoint.
-        
-        Args:
-            model_path: Path to the GGUF model file
-            
-        Returns:
-            Response dictionary with status and message
-        """
-        if not self.is_healthy():
-            return {
-                "status": "error",
-                "message": "llama-server is not running or not healthy"
-            }
-        
-        if not os.path.exists(model_path):
-            return {
-                "status": "error",
-                "message": f"Model file not found: {model_path}"
-            }
-        
-        logger.info(f"Loading model: {model_path}")
-        
-        try:
-            # Use the OpenAI-compatible load endpoint
-            response = requests.post(
-                f"{self.server_url}/v1/models/load",
-                json={"model": model_path},
-                timeout=120  # Model loading can take time
-            )
-            
-            if response.status_code == 200:
-                logger.info(f"Model loaded successfully: {model_path}")
-                return {
-                    "status": "success",
-                    "message": f"Model loaded: {model_path}",
-                    "data": response.json()
-                }
-            else:
-                error_msg = f"Failed to load model: HTTP {response.status_code}"
-                logger.error(error_msg)
-                return {
-                    "status": "error",
-                    "message": error_msg,
-                    "details": response.text
-                }
-                
-        except requests.exceptions.Timeout:
-            error_msg = "Model loading timed out after 120 seconds"
-            logger.error(error_msg)
-            return {
-                "status": "error",
-                "message": error_msg
-            }
-        except Exception as e:
-            error_msg = f"Error loading model: {str(e)}"
-            logger.error(error_msg)
-            return {
-                "status": "error",
-                "message": error_msg
-            }
-    
     def get_stats(self) -> Dict[str, Any]:
         """
         Get process statistics for llama-server.

@@ -227,21 +227,8 @@ def model_exists(model_key: str) -> bool:
     Check if a model is available (either locally or via HuggingFace).
     """
     try:
-        model_info = MODELS.get(model_key)
-        if not model_info:
-            return False
-        
-        # Check local file
-        if "filename" in model_info:
-            local_path = os.path.join(MODELS_DIR, model_info["filename"])
-            if os.path.exists(local_path):
-                return True
-        
-        # If no local file, check if HF repo is defined
-        if "hf_repo" in model_info:
-            return True
-        
-        return False
+        get_model_source(model_key)
+        return True
     except ValueError:
         return False
 
