@@ -130,8 +130,28 @@ class ModelSwitchResponse(BaseModel):
     model_key: str
 
 # ============================================================================
-# Helper Functions
+# Helper Functions & Decorators
 # ============================================================================
+
+def require_llama_server(func):
+    """Decorator to ensure llama-server is healthy before endpoint execution"""
+    async def wrapper(*args, **kwargs):
+        if not state.llama_manager or not state.llama_manager.is_healthy():
+            raise HTTPException(status_code=503, detail="llama-server is not running")
+        return await func(*args, **kwargs)
+    wrapper.__name__ = func.__name__
+    wrapper.__doc__ = func.__doc__
+    return wrapper
+
+def require_not_generating(func):
+    """Decorator to ensure server is not currently generating"""
+    async def wrapper(*args, **kwargs):
+        if state.is_generating:
+            raise HTTPException(status_code=503, detail="Server busy - already generating response")
+        return await func(*args, **kwargs)
+    wrapper.__name__ = func.__name__
+    wrapper.__doc__ = func.__doc__
+    return wrapper
 
 def get_device_string() -> str:
     """Get human-readable device string"""
@@ -390,17 +410,11 @@ async def switch_model(request: ModelSwitchRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat", response_model=ChatResponse)
+@require_llama_server
+@require_not_generating
 async def chat(request: ChatRequest):
     """Main chat endpoint with tool calling support"""
-    
-    # Check if llama-server is running
-    if not state.llama_manager or not state.llama_manager.is_healthy():
-        raise HTTPException(status_code=503, detail="llama-server is not running")
-    
-    # Check if already generating
-    if state.is_generating:
-        raise HTTPException(status_code=503, detail="Server busy - already generating response")
-    
+
     if state.shutdown_requested:
         raise HTTPException(status_code=503, detail="Server shutting down")
     

@@ -26,6 +26,34 @@ class ChatClient:
         self.conversation_history: List[Dict[str, str]] = []
         self.system_prompt: Optional[str] = None
         
+    def _make_request(self, method: str, endpoint: str, json_data: dict = None,
+                      timeout: int = 30, error_prefix: str = "Request") -> Optional[Dict]:
+        """Generic request handler with error handling"""
+        try:
+            url = f"{self.server_url}{endpoint}"
+            response = getattr(requests, method)(url, json=json_data, timeout=timeout)
+
+            if response.status_code == 200:
+                return response.json()
+            else:
+                error = response.json().get("detail", "Unknown error")
+                console.print(f"[red]{error_prefix} error: {error}[/red]")
+                return None
+        except requests.exceptions.Timeout:
+            console.print(f"[red]{error_prefix} timed out[/red]")
+            return None
+        except requests.exceptions.RequestException as e:
+            console.print(f"[red]{error_prefix} failed: {e}[/red]")
+            return None
+
+    def _do_model_switch(self, model_key: str, current_model_key: str) -> bool:
+        """Helper to execute model switch with feedback"""
+        result = self.switch_model(model_key)
+        if result and result.get("status") == "success":
+            console.print(f"[green]✓ Successfully switched to {model_key}![/green]")
+            return True
+        return False
+
     def check_server_health(self) -> bool:
         """Check if server is healthy"""
         try:
@@ -36,7 +64,7 @@ class ChatClient:
             return False
         except requests.exceptions.RequestException:
             return False
-    
+
     def get_models_list(self) -> Optional[Dict]:
         """Get list of available models from server"""
         try:
@@ -131,27 +159,10 @@ class ChatClient:
     
     def send_command(self, command: str, value: Optional[str] = None) -> Optional[Dict]:
         """Send a command to the server"""
-        try:
-            payload = {"command": command}
-            if value is not None:
-                payload["value"] = value
-            
-            response = requests.post(
-                f"{self.server_url}/command",
-                json=payload,
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                return response.json()
-            else:
-                error = response.json().get("detail", "Unknown error")
-                console.print(f"[red]Command error: {error}[/red]")
-                return None
-                
-        except requests.exceptions.RequestException as e:
-            console.print(f"[red]Command failed: {e}[/red]")
-            return None
+        payload = {"command": command}
+        if value is not None:
+            payload["value"] = value
+        return self._make_request("post", "/command", json_data=payload, error_prefix="Command")
     
     def shutdown_server(self) -> bool:
         """Request server shutdown"""
@@ -331,20 +342,15 @@ class ChatClient:
                 except ValueError:
                     matching = [m for m in models if m["key"] == choice]
                     if matching:
-                        model_key = matching[0]["key"]
                         if not matching[0].get("exists", True):
                             console.print(f"[red]Model file not found![/red]")
                             continue
-                        if model_key == current_model_key:
-                            console.print(f"[yellow]Already using {model_key}[/yellow]")
+                        if matching[0]["key"] == current_model_key:
+                            console.print(f"[yellow]Already using {matching[0]['key']}[/yellow]")
                             return True
-                        
-                        result = self.switch_model(model_key)
-                        if result and result.get("status") == "success":
-                            console.print(f"[green]✓ Switched to {model_key}![/green]")
+                        self._do_model_switch(matching[0]["key"], current_model_key)
                         return True
-                    else:
-                        console.print(f"[red]Unknown model: {choice}[/red]")
+                    console.print(f"[red]Unknown model: {choice}[/red]")
             
             except KeyboardInterrupt:
                 console.print("\n[yellow]Selection cancelled.[/yellow]")

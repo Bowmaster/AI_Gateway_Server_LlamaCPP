@@ -120,7 +120,20 @@ class LlamaServerManager:
         except Exception as e:
             logger.error(f"Failed to start llama-server: {e}")
             return False
-    
+
+    def _monitor_stderr(self):
+        """Monitor stderr for download progress and errors"""
+        if not self.process or not self.process.stderr:
+            return
+
+        for line in self.process.stderr:
+            line = line.strip()
+            if not line:
+                continue
+            # Highlight download keywords
+            level = "info" if any(kw in line.lower() for kw in ['download', 'fetching', 'progress', 'mb']) else "debug"
+            getattr(logger, level)(f"llama-server: {line}")
+
     def _wait_for_ready(self, timeout: int = 60) -> bool:
         """
         Wait for llama-server to be ready by polling health endpoint.
@@ -135,25 +148,9 @@ class LlamaServerManager:
         start_time = time.time()
         last_log_time = start_time
         
-        # Start a thread to monitor stderr for progress
+        # Monitor stderr for download progress
         import threading
-        
-        def log_stderr():
-            """Monitor stderr for download progress and errors"""
-            if not self.process or not self.process.stderr:
-                return
-            
-            for line in self.process.stderr:
-                line = line.strip()
-                if line:
-                    # Highlight download progress
-                    if any(keyword in line.lower() for keyword in ['download', 'fetching', 'progress', 'mb']):
-                        logger.info(f"llama-server: {line}")
-                    else:
-                        logger.debug(f"llama-server: {line}")
-        
-        stderr_thread = threading.Thread(target=log_stderr, daemon=True)
-        stderr_thread.start()
+        threading.Thread(target=self._monitor_stderr, daemon=True).start()
         
         while time.time() - start_time < timeout:
             try:

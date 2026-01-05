@@ -534,5 +534,55 @@ After implementation, update:
 
 ---
 
-**Last Updated**: 2026-01-05 (Priority 2 complete)
-**Total Savings So Far**: 385 lines (Priority 1: 76 + Priority 2: 309)
+### ✅ Priority 3: COMPLETED (13 lines saved)
+
+**Phase 1 - Server Decorators (ai_server.py)**
+- Status: ✅ COMPLETED
+- Lines saved: 6 lines
+- Changes:
+  - Added `require_llama_server` decorator for health checks
+  - Added `require_not_generating` decorator for generation lock
+  - Applied decorators to `/chat` endpoint
+  - Removed manual health/generation checks
+- Result: Cleaner, more maintainable endpoint code
+
+**Phase 2 - Stderr Monitoring Simplification (llama_manager.py)**
+- Status: ✅ COMPLETED
+- Lines saved: 7 lines
+- Changes:
+  - Extracted inline log_stderr function to `_monitor_stderr` method
+  - Simplified threading call
+  - Cleaner, more readable code
+- Result: Better separation of concerns
+
+**Total Priority 3 Savings**: 13 lines
+
+---
+
+### ✅ Priority 4: COMPLETED (20 lines saved)
+
+**Phase 1 - Client Error Handling (ai_client.py)**
+- Status: ✅ COMPLETED
+- Lines saved: 14 lines
+- Changes:
+  - Added `_make_request` helper method for generic request handling
+  - Consolidated error handling (timeout, connection, HTTP errors)
+  - Simplified `send_command` to use helper (22 lines → 4 lines)
+- Result: DRY principle, consistent error messages
+
+**Phase 2 - Remove Duplicate Model Selection (ai_client.py)**
+- Status: ✅ COMPLETED
+- Lines saved: 6 lines
+- Changes:
+  - Added `_do_model_switch` helper method
+  - Removed duplicate model switching logic in ValueError handler
+  - Consistent user feedback across selection paths
+- Result: Eliminated code duplication
+
+**Total Priority 4 Savings**: 20 lines
+
+---
+
+**Last Updated**: 2026-01-05 (All priorities complete)
+**Total Savings**: 418 lines (Priority 1: 76 + Priority 2: 309 + Priority 3: 13 + Priority 4: 20)
+**Bugs Fixed**: 2 critical runtime errors
