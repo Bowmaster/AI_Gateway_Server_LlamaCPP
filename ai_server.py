@@ -133,24 +133,24 @@ class ModelSwitchResponse(BaseModel):
 # Helper Functions & Decorators
 # ============================================================================
 
+from functools import wraps
+
 def require_llama_server(func):
     """Decorator to ensure llama-server is healthy before endpoint execution"""
+    @wraps(func)
     async def wrapper(*args, **kwargs):
         if not state.llama_manager or not state.llama_manager.is_healthy():
             raise HTTPException(status_code=503, detail="llama-server is not running")
         return await func(*args, **kwargs)
-    wrapper.__name__ = func.__name__
-    wrapper.__doc__ = func.__doc__
     return wrapper
 
 def require_not_generating(func):
     """Decorator to ensure server is not currently generating"""
+    @wraps(func)
     async def wrapper(*args, **kwargs):
         if state.is_generating:
             raise HTTPException(status_code=503, detail="Server busy - already generating response")
         return await func(*args, **kwargs)
-    wrapper.__name__ = func.__name__
-    wrapper.__doc__ = func.__doc__
     return wrapper
 
 def get_device_string() -> str:
