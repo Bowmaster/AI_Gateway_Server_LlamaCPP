@@ -130,8 +130,28 @@ class ModelSwitchResponse(BaseModel):
     model_key: str
 
 # ============================================================================
-# Helper Functions
+# Helper Functions & Decorators
 # ============================================================================
+
+from functools import wraps
+
+def require_llama_server(func):
+    """Decorator to ensure llama-server is healthy before endpoint execution"""
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        if not state.llama_manager or not state.llama_manager.is_healthy():
+            raise HTTPException(status_code=503, detail="llama-server is not running")
+        return await func(*args, **kwargs)
+    return wrapper
+
+def require_not_generating(func):
+    """Decorator to ensure server is not currently generating"""
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        if state.is_generating:
+            raise HTTPException(status_code=503, detail="Server busy - already generating response")
+        return await func(*args, **kwargs)
+    return wrapper
 
 def get_device_string() -> str:
     """Get human-readable device string"""
@@ -301,14 +321,14 @@ async def health_check():
 @app.get("/models", response_model=ModelsListResponse)
 async def list_models():
     """List all available models"""
-    try:
-        source_type, _ = config.get_model_source(key)
-    except ValueError:
-        source_type = "unavailable"
-
     models_list = []
-    
+
     for key, info in config.MODELS.items():
+        try:
+            source_type, _ = config.get_model_source(key)
+        except ValueError:
+            source_type = "unavailable"
+
         models_list.append(ModelInfo(
             key=key,
             name=info["name"],
@@ -318,9 +338,9 @@ async def list_models():
             recommended=info["recommended"],
             is_current=(key == state.current_model_key),
             exists=config.model_exists(key),
-            source=source_type  # NEW
+            source=source_type
         ))
-    
+
     return ModelsListResponse(
         models=models_list,
         current_model_key=state.current_model_key
@@ -339,34 +359,44 @@ async def switch_model(request: ModelSwitchRequest):
     if not config.model_exists(request.model_key):
         raise HTTPException(status_code=404, detail=f"Model not available: {request.model_key}")
     
-    # Already using check...
+    # Already using this model
     if request.model_key == state.current_model_key:
-        return ModelSwitchResponse(...)  # unchanged
-    
-    # Generating check...
+        return ModelSwitchResponse(
+            status="success",
+            message=f"Already using {request.model_key}",
+            previous_model=state.current_model_key,
+            new_model=state.current_model_key,
+            model_key=state.current_model_key
+        )
+
+    # Check if currently generating
     if state.is_generating:
-        raise HTTPException(...)
-    
-    logger.info(f"Switching from {state.current_model_key} to {request.model_key}")
-    
+        raise HTTPException(
+            status_code=503,
+            detail="Cannot switch models while generating response"
+        )
+
+    previous_key = state.current_model_key
+    logger.info(f"Switching from {previous_key} to {request.model_key}")
+
     try:
-        # NEW: Determine source
+        # Determine source
         source_type, identifier = config.get_model_source(request.model_key)
         use_hf = (source_type == "huggingface")
-        
+
         if use_hf:
             logger.info(f"Downloading from HuggingFace: {identifier}")
-        
+
         # Restart with new model
         if state.llama_manager.restart(identifier, use_hf=use_hf):
             state.current_model_key = request.model_key
             state.conversation_history = []
-            
+
             logger.info(f"✓ Switched to {request.model_key}")
-            
+
             return ModelSwitchResponse(
                 status="success",
-                message=f"Switched to {request.model_key}" + 
+                message=f"Switched to {request.model_key}" +
                        (" (downloaded from HF)" if use_hf else ""),
                 previous_model=previous_key,
                 new_model=request.model_key,
@@ -380,17 +410,11 @@ async def switch_model(request: ModelSwitchRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat", response_model=ChatResponse)
+@require_llama_server
+@require_not_generating
 async def chat(request: ChatRequest):
     """Main chat endpoint with tool calling support"""
-    
-    # Check if llama-server is running
-    if not state.llama_manager or not state.llama_manager.is_healthy():
-        raise HTTPException(status_code=503, detail="llama-server is not running")
-    
-    # Check if already generating
-    if state.is_generating:
-        raise HTTPException(status_code=503, detail="Server busy - already generating response")
-    
+
     if state.shutdown_requested:
         raise HTTPException(status_code=503, detail="Server shutting down")
     
@@ -491,75 +515,23 @@ async def chat(request: ChatRequest):
                 
                 logger.info(f"Tool call: {function_name}({arguments})")
                 
-                # Execute the tool
+                # Execute the tool using the decorator registry
                 try:
-                    # Network tools
-                    if function_name == "lookup_hostname":
-                        result = tools.lookup_hostname(**arguments)
-                        tools_used.append(f"{function_name}({arguments.get('hostname', 'unknown')})")
-                    
-                    elif function_name == "measure_http_latency":
-                        result = tools.measure_http_latency(**arguments)
-                        tools_used.append(f"{function_name}({arguments.get('hostname', 'unknown')})")
-                    
-                    # File I/O tools
-                    elif function_name == "read_file":
-                        result = tools.read_file(**arguments)
-                        tools_used.append(f"{function_name}({arguments.get('path', 'unknown')})")
-                    
-                    elif function_name == "write_file":
-                        result = tools.write_file(**arguments)
-                        tools_used.append(f"{function_name}({arguments.get('path', 'unknown')})")
-                    
-                    # Directory listing and search
-                    elif function_name == "list_contents":
-                        result = tools.list_contents(**arguments)
-                        tools_used.append(f"{function_name}({arguments.get('path', 'unknown')})")
-                    
-                    elif function_name == "search_files":
-                        result = tools.search_files(**arguments)
-                        tools_used.append(f"{function_name}({arguments.get('pattern', 'unknown')})")
-                    
-                    # File metadata and info
-                    elif function_name == "get_file_info":
-                        result = tools.get_file_info(**arguments)
-                        tools_used.append(f"{function_name}({arguments.get('path', 'unknown')})")
-                    
-                    elif function_name == "get_current_directory":
-                        result = tools.get_current_directory(**arguments)
-                        tools_used.append(function_name)
-                    
-                    elif function_name == "calculate_directory_size":
-                        result = tools.calculate_directory_size(**arguments)
-                        tools_used.append(f"{function_name}({arguments.get('path', 'unknown')})")
-                    
-                    # File operations
-                    elif function_name == "create_directory":
-                        result = tools.create_directory(**arguments)
-                        tools_used.append(f"{function_name}({arguments.get('path', 'unknown')})")
-                    
-                    elif function_name == "move_file":
-                        result = tools.move_file(**arguments)
-                        tools_used.append(f"{function_name}({arguments.get('source', 'unknown')}→{arguments.get('destination', 'unknown')})")
-                    
-                    elif function_name == "copy_file":
-                        result = tools.copy_file(**arguments)
-                        tools_used.append(f"{function_name}({arguments.get('source', 'unknown')}→{arguments.get('destination', 'unknown')})")
-                    
-                    elif function_name == "delete_file":
-                        result = tools.delete_file(**arguments)
-                        tools_used.append(f"{function_name}({arguments.get('path', 'unknown')})")
-                    
-                    # Content search
-                    elif function_name == "find_in_files":
-                        result = tools.find_in_files(**arguments)
-                        tools_used.append(f"{function_name}('{arguments.get('search_text', 'unknown')}')")
-                    
+                    result = tools.execute_tool(function_name, arguments)
+
+                    # Build logging string for tools_used
+                    key_param = tools.get_tool_key_param(function_name)
+                    if key_param and key_param in arguments:
+                        # Special formatting for move/copy operations
+                        if function_name in ["move_file", "copy_file"] and "destination" in arguments:
+                            tools_used.append(f"{function_name}({arguments[key_param]}→{arguments['destination']})")
+                        else:
+                            tools_used.append(f"{function_name}({arguments[key_param]})")
                     else:
-                        result = {"error": f"Unknown tool: {function_name}"}
-                    
+                        tools_used.append(function_name)
+
                     logger.info(f"Tool result: {result}")
-                    
+
                 except Exception as e:
                     result = {"error": str(e)}
                     logger.error(f"Tool execution error: {e}")
