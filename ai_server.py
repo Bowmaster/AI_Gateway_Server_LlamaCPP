@@ -6,7 +6,7 @@ FastAPI server that manages llama-server and provides chat interface
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 import logging
 import sys
 import signal
@@ -129,6 +129,11 @@ class ModelSwitchResponse(BaseModel):
     new_model: str
     model_key: str
 
+class HardwareInfoResponse(BaseModel):
+    profile: Dict[str, Any]
+    current_config: Dict[str, Any]
+    device_string: str
+
 # ============================================================================
 # Helper Functions & Decorators
 # ============================================================================
@@ -240,46 +245,75 @@ async def startup_event():
     logger.info("=" * 60)
     logger.info("AI Lab Server (llama.cpp) Starting...")
     logger.info("=" * 60)
-    
+
+    # Display hardware configuration
+    logger.info("=" * 60)
+    logger.info("Hardware Configuration")
+    logger.info("=" * 60)
+    hw = config.HARDWARE_PROFILE
+
+    if hw.get("gpu", {}).get("has_gpu"):
+        gpu = hw["gpu"]
+        logger.info(f"GPU: {gpu['name']} ({gpu['vram_gb']}GB VRAM)")
+        logger.info(f"  CUDA: {gpu.get('cuda_version', 'unknown')}")
+        logger.info(f"  Driver: {gpu.get('driver_version', 'unknown')}")
+    else:
+        logger.info("GPU: None detected")
+
+    cpu = hw.get("cpu", {})
+    logger.info(f"CPU: {cpu.get('name', 'Unknown')}")
+    logger.info(f"  Cores: {cpu.get('physical_cores', 'unknown')} physical, {cpu.get('logical_cores', 'unknown')} logical")
+
+    memory = hw.get("memory", {})
+    logger.info(f"RAM: {memory.get('total_gb', 0):.1f}GB total ({memory.get('available_gb', 0):.1f}GB available)")
+
+    recommended = hw.get("recommended_config", {})
+    logger.info(f"System Type: {hw.get('system_type', 'unknown')}")
+    logger.info(f"Inference Mode: {recommended.get('mode', 'unknown')}")
+    logger.info(f"  GPU Layers: {config.LLAMA_SERVER_CONFIG['n_gpu_layers']}")
+    logger.info(f"  Context Size: {config.LLAMA_SERVER_CONFIG['ctx_size']} tokens")
+    logger.info(f"  CPU Threads: {config.LLAMA_SERVER_CONFIG['threads'] or 'auto'}")
+    logger.info("=" * 60)
+
     # Validate configuration
     issues = config.validate_config()
     if issues:
         logger.warning("Configuration notes:")
         for issue in issues:
             logger.warning(f"  - {issue}")
-    
+
     # Initialize llama manager
     state.llama_manager = LlamaServerManager(config.LLAMA_SERVER_CONFIG)
-    
+
     # Auto-start if configured
     if config.LLAMA_SERVER_CONFIG.get('auto_start', True):
         logger.info(f"Auto-starting llama-server with model: {config.DEFAULT_MODEL_KEY}")
-        
+
         try:
             # NEW: Use get_model_source to determine local vs HF
             source_type, identifier = config.get_model_source(config.DEFAULT_MODEL_KEY)
-            
+
             logger.info(f"  Source: {source_type}")
             logger.info(f"  Identifier: {identifier}")
-            
+
             use_hf = (source_type == "huggingface")
-            
+
             # Start with use_hf flag
             if state.llama_manager.start(identifier, use_hf=use_hf):
                 logger.info(f"✓ llama-server started successfully")
                 logger.info(f"  Model: {config.DEFAULT_MODEL_KEY}")
                 logger.info(f"  Device: {get_device_string()}")
-                
+
                 if use_hf:
                     logger.info(f"  Downloaded from HuggingFace")
                     logger.info(f"  Cache: {config.LLAMA_SERVER_CONFIG['cache_dir']}")
             else:
                 logger.error("✗ Failed to start llama-server")
-                
+
         except Exception as e:
             logger.error(f"Error during llama-server startup: {e}")
             logger.error("Server will start but chat will not work")
-    
+
     logger.info("=" * 60)
     logger.info(f"AI Lab Server ready on {config.HOST}:{config.PORT}")
     logger.info("=" * 60)
@@ -659,6 +693,35 @@ async def execute_command(request: CommandRequest):
     
     else:
         raise HTTPException(status_code=400, detail=f"Unknown command: {command}")
+
+@app.get("/hardware", response_model=HardwareInfoResponse)
+async def get_hardware_info():
+    """Get detected hardware information and current configuration"""
+    return HardwareInfoResponse(
+        profile=config.HARDWARE_PROFILE,
+        current_config={
+            "n_gpu_layers": config.LLAMA_SERVER_CONFIG["n_gpu_layers"],
+            "ctx_size": config.LLAMA_SERVER_CONFIG["ctx_size"],
+            "threads": config.LLAMA_SERVER_CONFIG["threads"],
+        },
+        device_string=get_device_string()
+    )
+
+@app.post("/hardware/redetect")
+async def redetect_hardware():
+    """Force hardware re-detection (requires server restart to apply)"""
+    try:
+        from hardware_detector import detect_and_save
+        profile = detect_and_save(config.HARDWARE_PROFILE_PATH)
+
+        return {
+            "status": "ok",
+            "message": "Hardware re-detected successfully. Restart server to apply new configuration.",
+            "profile": profile
+        }
+    except Exception as e:
+        logger.error(f"Hardware re-detection failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to re-detect hardware: {str(e)}")
 
 @app.post("/shutdown")
 async def shutdown():
