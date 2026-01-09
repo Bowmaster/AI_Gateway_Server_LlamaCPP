@@ -74,16 +74,27 @@ class ChatClient:
             return None
         except requests.exceptions.RequestException:
             return None
-    
+
+    def get_hardware(self) -> Optional[Dict]:
+        """Get hardware information from server"""
+        try:
+            response = requests.get(f"{self.server_url}/hardware", timeout=5)
+            if response.status_code == 200:
+                return response.json()
+            return None
+        except requests.exceptions.RequestException as e:
+            console.print(f"[red]Failed to get hardware info: {e}[/red]")
+            return None
+
     def switch_model(self, model_key: str) -> Optional[Dict]:
-        """Switch to a different model"""
+        """Switch to a different model (5 min timeout for HuggingFace downloads)"""
         try:
             response = requests.post(
                 f"{self.server_url}/model/switch",
                 json={"model_key": model_key},
-                timeout=60
+                timeout=300  # 5 minutes for HF downloads
             )
-            
+
             if response.status_code == 200:
                 return response.json()
             else:
@@ -91,7 +102,7 @@ class ChatClient:
                 console.print(f"[red]Error switching model: {error}[/red]")
                 return None
         except requests.exceptions.Timeout:
-            console.print("[red]Model switch timed out.[/red]")
+            console.print("[red]Model switch timed out (5 min). Check server logs for download progress.[/red]")
             return None
         except requests.exceptions.RequestException as e:
             console.print(f"[red]Failed to switch model: {e}[/red]")
@@ -408,7 +419,11 @@ class ChatClient:
         elif cmd == "status":
             self.show_status()
             return True
-        
+
+        elif cmd == "hardware":
+            self.show_hardware()
+            return True
+
         # Server commands
         elif cmd == "system":
             if value is None:
@@ -593,6 +608,7 @@ class ChatClient:
   /export-json <path>  - Export to JSON
   /export-ft <path>    - Export for fine-tuning (JSONL)
   /status              - Show server status
+  /hardware            - Show server hardware configuration
 
 [bold]Server Commands:[/bold]
   /system              - Show system prompt
@@ -641,7 +657,65 @@ class ChatClient:
                 console.print("[red]Could not get server status[/red]")
         except:
             console.print("[red]Server unreachable[/red]")
-    
+
+    def show_hardware(self):
+        """Show hardware configuration of the server"""
+        hw_info = self.get_hardware()
+
+        if not hw_info:
+            console.print("[red]Could not retrieve hardware information[/red]")
+            return
+
+        profile = hw_info.get("profile", {})
+        current_config = hw_info.get("current_config", {})
+        device_string = hw_info.get("device_string", "Unknown")
+
+        # Extract hardware details
+        gpu = profile.get("gpu", {})
+        cpu = profile.get("cpu", {})
+        memory = profile.get("memory", {})
+        recommended = profile.get("recommended_config", {})
+
+        # Build hardware info text
+        hardware_text = f"""[bold cyan]System Type:[/bold cyan] {profile.get('system_type', 'unknown')}
+[bold cyan]Detected:[/bold cyan] {profile.get('detected_at', 'unknown')}
+
+[bold yellow]GPU:[/bold yellow]"""
+
+        if gpu.get("has_gpu", False):
+            hardware_text += f"""
+  Name: [green]{gpu.get('name', 'Unknown')}[/green]
+  VRAM: [green]{gpu.get('vram_gb', 0):.1f}GB[/green]
+  CUDA: {gpu.get('cuda_version', 'unknown')}
+  Driver: {gpu.get('driver_version', 'unknown')}"""
+        else:
+            hardware_text += """
+  [yellow]None detected (CPU-only mode)[/yellow]"""
+
+        hardware_text += f"""
+
+[bold yellow]CPU:[/bold yellow]
+  Name: {cpu.get('name', 'Unknown')}
+  Physical Cores: {cpu.get('physical_cores', 'unknown')}
+  Logical Cores: {cpu.get('logical_cores', 'unknown')}
+
+[bold yellow]RAM:[/bold yellow]
+  Total: {memory.get('total_gb', 0):.1f}GB
+  Available: {memory.get('available_gb', 0):.1f}GB ({memory.get('percent_available', 0):.1f}%)
+
+[bold cyan]Current Configuration:[/bold cyan]
+  Mode: [cyan]{recommended.get('mode', 'unknown')}[/cyan]
+  Device: {device_string}
+  GPU Layers: {current_config.get('n_gpu_layers', 'N/A')}
+  Context Size: {current_config.get('ctx_size', 'N/A')} tokens
+  CPU Threads: {current_config.get('threads', 'auto')}
+
+[bold cyan]Reasoning:[/bold cyan]
+  {recommended.get('reasoning', 'N/A')}"""
+
+        console.print(Panel(hardware_text, title=f"Hardware Configuration - {self.server_url}",
+                           border_style="cyan", box=box.ROUNDED))
+
     def run(self):
         """Main client loop"""
         

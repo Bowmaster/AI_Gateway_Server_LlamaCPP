@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./llama.cpp/llama-server.exe:*)"
+    ]
+  }
+}

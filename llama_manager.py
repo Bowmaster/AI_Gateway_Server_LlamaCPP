@@ -70,8 +70,7 @@ class LlamaServerManager:
         
         # Add context size and GPU layers
         cmd.extend([
-            #"--ctx-size", str(self.config.get('ctx_size', 12288)),
-            "-c", str(self.config.get('ctx_size', 12288)),
+            "--ctx-size", str(self.config.get('ctx_size', 12288)),  # Use full flag name for clarity
             "-n", str(self.config.get('n_predict', 8192)),
             "--n-gpu-layers", str(self.config.get('n_gpu_layers', -1)),
         ])
@@ -83,7 +82,13 @@ class LlamaServerManager:
         # Add any additional args from config
         if self.config.get('additional_args'):
             cmd.extend(self.config['additional_args'])
-        
+
+        # Log hardware configuration being used
+        logger.info("Hardware Configuration:")
+        logger.info(f"  GPU Layers: {self.config.get('n_gpu_layers', -1)}")
+        logger.info(f"  Context Size: {self.config.get('ctx_size', 12288)} tokens")
+        logger.info(f"  CPU Threads: {self.config.get('threads', 'auto')}")
+
         logger.info(f"Starting llama-server with command: {' '.join(cmd)}")
         
         try:

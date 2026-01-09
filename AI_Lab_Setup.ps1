@@ -81,6 +81,7 @@ try {
 }
 
 # Install llama-cpp-python
+<#
 Write-Host ""
 Write-Host "Installing llama-cpp-python..." -ForegroundColor Yellow
 if ($installGPU) {
@@ -100,6 +101,7 @@ if ($installGPU) {
     Write-Host "Installing CPU-only version..." -ForegroundColor Cyan
     pip install llama-cpp-python
 }
+#>
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERROR: llama-cpp-python installation failed." -ForegroundColor Red
@@ -111,12 +113,12 @@ if ($LASTEXITCODE -ne 0) {
 # Install server/client dependencies
 Write-Host ""
 Write-Host "Installing server/client dependencies..." -ForegroundColor Yellow
-pip install fastapi uvicorn requests rich
+pip install fastapi uvicorn requests rich psutil
 
 # Install optional but useful packages
 Write-Host ""
 Write-Host "Installing additional tools..." -ForegroundColor Yellow
-pip install huggingface_hub  # For downloading GGUF models from HuggingFace
+pip install huggingface_hub nvidia-ml-py  # HuggingFace downloads + GPU detection (replaces deprecated pynvml)
 
 # Verify installation
 Write-Host ""
@@ -176,6 +178,70 @@ python verify_setup.py
 
 # Clean up verification script
 Remove-Item verify_setup.py
+
+# Run hardware detection
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "Hardware Detection" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "Detecting system hardware..." -ForegroundColor Yellow
+
+try {
+    python -c "from hardware_detector import detect_and_save; detect_and_save('.hardware_profile.json')" 2>&1 | Out-Null
+
+    if ($LASTEXITCODE -eq 0 -and (Test-Path ".hardware_profile.json")) {
+        Write-Host "Hardware profile created successfully!" -ForegroundColor Green
+        Write-Host ""
+
+        # Load and display the profile
+        $profile = Get-Content .hardware_profile.json | ConvertFrom-Json
+
+        Write-Host "System Type: " -NoNewline -ForegroundColor White
+        Write-Host $profile.system_type -ForegroundColor Cyan
+
+        # GPU info
+        if ($profile.gpu.has_gpu) {
+            Write-Host "GPU: " -NoNewline -ForegroundColor White
+            Write-Host "$($profile.gpu.name) ($($profile.gpu.vram_gb)GB VRAM)" -ForegroundColor Green
+            Write-Host "  CUDA: " -NoNewline -ForegroundColor White
+            Write-Host $profile.gpu.cuda_version -ForegroundColor Cyan
+            Write-Host "  Mode: GPU-Accelerated" -ForegroundColor Green
+            Write-Host "  Recommended: 7B-14B models with Q4/Q5 quantization" -ForegroundColor Yellow
+        } else {
+            Write-Host "GPU: " -NoNewline -ForegroundColor White
+            Write-Host "None detected" -ForegroundColor Yellow
+            Write-Host "  Mode: CPU-Only" -ForegroundColor Yellow
+            Write-Host "  Recommended: 3B-7B models with Q4 quantization" -ForegroundColor Yellow
+        }
+
+        # CPU info
+        Write-Host "CPU: " -NoNewline -ForegroundColor White
+        Write-Host "$($profile.cpu.name)" -ForegroundColor Cyan
+        Write-Host "  Threads: " -NoNewline -ForegroundColor White
+        Write-Host "$($profile.cpu.logical_cores)" -ForegroundColor Cyan
+
+        # RAM info
+        Write-Host "RAM: " -NoNewline -ForegroundColor White
+        Write-Host "$([math]::Round($profile.memory.total_gb, 1))GB" -ForegroundColor Cyan
+
+        # Configuration
+        Write-Host ""
+        Write-Host "Recommended Configuration:" -ForegroundColor Yellow
+        Write-Host "  Context Size: " -NoNewline -ForegroundColor White
+        Write-Host "$($profile.recommended_config.ctx_size) tokens" -ForegroundColor Cyan
+        Write-Host "  GPU Layers: " -NoNewline -ForegroundColor White
+        Write-Host $profile.recommended_config.n_gpu_layers -ForegroundColor Cyan
+        Write-Host "  Reasoning: " -NoNewline -ForegroundColor White
+        Write-Host $profile.recommended_config.reasoning -ForegroundColor Gray
+
+    } else {
+        Write-Host "Hardware detection completed with warnings. Check logs for details." -ForegroundColor Yellow
+    }
+} catch {
+    Write-Host "Hardware detection failed: $_" -ForegroundColor Red
+    Write-Host "Continuing with setup - you can run detection manually later." -ForegroundColor Yellow
+}
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
