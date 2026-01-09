@@ -162,107 +162,67 @@ MODELS_DIR = "./models"
 
 # Model Registry
 # Define all available GGUF models with their properties
+# Good late 2025 source for local lab models: https://www.virtualizationhowto.com/2025/08/10-open-source-ai-models-you-should-try-in-your-home-lab-august-2025/
 MODELS = {
-    # Qwen2.5 models - Excellent all-rounders
-    "qwen2.5-7b-q4": {
-        "name": "Qwen2.5-7B-Instruct-Q4_K_M",
-        "filename": "qwen2.5-7b-instruct-q4_k_m.gguf",  # Local file
-        "hf_repo": "Qwen/Qwen2.5-7B-Instruct-GGUF:Q4_K_M",  # NEW: HuggingFace fallback
-        "description": "Qwen2.5 7B: Best balance of quality and speed (Q4_K_M quantization)",
-        "context_length": 32768,
-        "vram_estimate": "~5GB",
-        "recommended": True,
-        "download_url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf",
-        "usage": "Best all-rounder: General chat, coding, reasoning. Fast and efficient.",
-    },
-    
-    "qwen2.5-7b-q5": {
-        "name": "Qwen2.5-7B-Instruct-Q5_K_M",
-        "filename": "qwen2.5-7b-instruct-q5_k_m.gguf",
-        "description": "Qwen2.5 7B: Higher quality quantization (Q5_K_M)",
-        "context_length": 32768,
-        "vram_estimate": "~6GB",
-        "recommended": False,
-        "download_url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q5_k_m.gguf",
-        "usage": "Higher quality: Better responses, slightly slower. Use when quality matters more than speed.",
-    },
-    
-    "qwen2.5-7b-q8": {
-        "name": "Qwen2.5-7B-Instruct-Q8_0",
-        "filename": "qwen2.5-7b-instruct-q8_0.gguf",
-        "description": "Qwen2.5 7B: Maximum quality quantization (Q8_0)",
-        "context_length": 32768,
-        "vram_estimate": "~8GB",
-        "recommended": False,
-        "download_url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q8_0.gguf",
-        "usage": "Maximum quality: Near-FP16 quality. Use when you have VRAM to spare.",
-    },
-    
-    # Qwen2.5-Coder - Code specialist
-    "qwen2.5-coder-7b-q4": {
-        "name": "Qwen2.5-Coder-7B-Instruct-Q4_K_M",
-        "filename": "qwen2.5-coder-7b-instruct-q4_k_m.gguf",
-        "description": "Qwen2.5-Coder 7B: Specialized for coding (Q4_K_M)",
-        "context_length": 32768,
+    "codegemma-7b-q4": {
+        "name": "CodeGemma 7B Q4_K_M",
+        "hf_repo": "bartowski/codegemma-7b-GGUF:Q4_K_M",
+        "description": "Google's CodeGemma 7B: Code-specialized Gemma variant",
+        "context_length": 8192,  # CodeGemma native context is 8K
         "vram_estimate": "~5GB",
         "recommended": False,
-        "download_url": "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF/resolve/main/qwen2.5-coder-7b-instruct-q4_k_m.gguf",
-        "usage": "Code-focused: Writing code, debugging, code review, explaining algorithms.",
+        "download_url": "https://huggingface.co/bartowski/codegemma-7b-GGUF",
+        "usage": "Code generation, completion, and understanding",
     },
-    
-    # Larger models
-    "qwen2.5-14b-q4": {
-        "name": "Qwen2.5-14B-Instruct-Q4_K_M",
-        "filename": "qwen2.5-14b-instruct-q4_k_m.gguf",
-        "description": "Qwen2.5 14B: More capable model (Q4_K_M)",
-        "context_length": 32768,
-        "vram_estimate": "~9GB",
-        "recommended": False,
-        "download_url": "https://huggingface.co/Qwen/Qwen2.5-14B-Instruct-GGUF/resolve/main/qwen2.5-14b-instruct-q4_k_m.gguf",
-        "usage": "Advanced tasks: Complex reasoning, nuanced analysis, technical writing.",
-    },
-    
-    # Mistral Ministral-3-8B
-    "ministral-3-8b-q8": {
-        "name": "Ministral-3-8B-Instruct-Q8_0",
-        "filename": "mistralai_Ministral-3-8B-Instruct-2512-GGUF_Ministral-3-8B-Instruct-2512-Q8_0.gguf",
-        "description": "Mistral Ministral-3 8B: Latest model with excellent instruction following (Q8_0)",
-        "context_length": 32768,
-        "hf_repo": "mistralai/Ministral-3-8B-Instruct-2512-GGUF:Q4_K_M",
-        "vram_estimate": "~9GB",
-        "recommended": False,
-        "download_url": "https://huggingface.co/mistralai/Ministral-3-8B-Instruct-2512-GGUF/resolve/main/Ministral-3-8B-Instruct-2512-Q8_0.gguf",
-        "usage": "Latest Mistral model: Excellent instruction following, general chat, coding, reasoning. High quality Q8 quantization.",
-    },
-    
-    # DeepSeek-R1 - Reasoning specialist
-    "deepseek-r1-7b-q4": {
-        "name": "DeepSeek-R1-Distill-Qwen-7B-Q4_K_M",
-        "filename": "deepseek-r1-distill-qwen-7b-q4_k_m.gguf",
-        "description": "DeepSeek-R1 7B: Reasoning specialist with thinking traces (Q4_K_M)",
-        "context_length": 32768,
-        "vram_estimate": "~5GB",
-        "recommended": False,
-        "download_url": "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-7B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-7B.Q4_K_M.gguf",
-        "usage": "Deep reasoning: Math problems, logic puzzles, complex analysis. Shows reasoning process.",
-    },
-    
-    # Llama models
-    "llama3.2-3b-q4": {
-        "name": "Llama-3.2-3B-Instruct-Q4_K_M",
-        "filename": "llama-3.2-3b-instruct-q4_k_m.gguf",
-        "description": "Llama 3.2 3B: Small, fast model for testing (Q4_K_M)",
-        "context_length": 131072,
+
+    "gemma3-4b-q4": {
+        "name": "Gemma 3 4B Instruct Q4_K_M",
+        "hf_repo": "bartowski/google_gemma-3-4b-it-GGUF:Q4_K_M",
+        "description": "Google's Gemma 3 4B: Lightweight multimodal model",
+        "context_length": 8192,  # Gemma 3 native context is 8K
         "vram_estimate": "~3GB",
         "recommended": False,
-        "download_url": "https://huggingface.co/lmstudio-community/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-        "usage": "Quick testing: Rapid prototyping, basic chat, verifying setup.",
+        "download_url": "https://huggingface.co/bartowski/google_gemma-3-4b-it-GGUF",
+        "usage": "General chat, text generation, lightweight tasks",
+    },
+
+    "qwen2.5-coder-7b-q4": {
+        "name": "Qwen2.5-Coder-7B-Instruct Q4_K_M",
+        "description": "Qwen2.5-Coder 7B: Specialized for coding",
+        "hf_repo": "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M",
+        "context_length": 32768,  # Qwen2.5 supports 32K natively
+        "vram_estimate": "~5GB",
+        "recommended": True,
+        "download_url": "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
+        "usage": "Code-focused: Writing code, debugging, code review, explaining algorithms",
+    },
+
+    "qwen2.5-instruct-7b-q4": {
+        "name": "Qwen2.5-7B-Instruct Q4_K_M",
+        "description": "Qwen2.5 7B: General-purpose instruction-following model",
+        "hf_repo": "Qwen/Qwen2.5-7B-Instruct-GGUF:Q4_K_M",
+        "context_length": 32768,  # Qwen2.5 supports 32K natively
+        "vram_estimate": "~5GB",
+        "recommended": True,
+        "download_url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF",
+        "usage": "General purpose: Chat, reasoning, writing, instruction following",
+    },
+
+    "llama3.2-3b-q4": {
+        "name": "Llama-3.2-3B-Instruct Q4_K_M",
+        "description": "Meta's Llama 3.2 3B: Small, fast model for testing",
+        "hf_repo": "lmstudio-community/Llama-3.2-3B-Instruct-GGUF:Q4_K_M",
+        "context_length": 131072,  # Llama 3.2 supports 128K context
+        "vram_estimate": "~2.5GB",
+        "recommended": False,
+        "download_url": "https://huggingface.co/lmstudio-community/Llama-3.2-3B-Instruct-GGUF",
+        "usage": "Quick testing: Rapid prototyping, basic chat, verifying setup",
     },
 }
 
 # Update default to Qwen (better context handling)
 #DEFAULT_MODEL_KEY = "qwen2.5-7b-q4"
-DEFAULT_MODEL_KEY = "ministral-3-8b-q8"
+DEFAULT_MODEL_KEY = "qwen2.5-instruct-7b-q4"
 
 # ============================================================================
 # Generation Defaults
