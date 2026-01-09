@@ -87,14 +87,14 @@ class ChatClient:
             return None
 
     def switch_model(self, model_key: str) -> Optional[Dict]:
-        """Switch to a different model"""
+        """Switch to a different model (5 min timeout for HuggingFace downloads)"""
         try:
             response = requests.post(
                 f"{self.server_url}/model/switch",
                 json={"model_key": model_key},
-                timeout=60
+                timeout=300  # 5 minutes for HF downloads
             )
-            
+
             if response.status_code == 200:
                 return response.json()
             else:
@@ -102,7 +102,7 @@ class ChatClient:
                 console.print(f"[red]Error switching model: {error}[/red]")
                 return None
         except requests.exceptions.Timeout:
-            console.print("[red]Model switch timed out.[/red]")
+            console.print("[red]Model switch timed out (5 min). Check server logs for download progress.[/red]")
             return None
         except requests.exceptions.RequestException as e:
             console.print(f"[red]Failed to switch model: {e}[/red]")
