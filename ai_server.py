@@ -702,6 +702,8 @@ async def chat_stream(request: ChatRequest):
             messages = build_messages_for_llama(request.system_prompt)
             tools_used = []
             accumulated_content = ""
+            tokens_in = 0
+            tokens_out = 0
 
             if tools_enabled:
                 # Hybrid mode: buffer first response for tool detection
@@ -731,6 +733,11 @@ async def chat_stream(request: ChatRequest):
                     choice = llama_response["choices"][0]
                     message = choice["message"]
                     tool_calls = message.get("tool_calls", [])
+
+                    # Track token usage from batch response
+                    usage = llama_response.get("usage", {})
+                    tokens_in += usage.get("prompt_tokens", 0)
+                    tokens_out += usage.get("completion_tokens", 0)
 
                     if not tool_calls:
                         # No tools - we have the final response
@@ -790,13 +797,21 @@ async def chat_stream(request: ChatRequest):
                 ):
                     yield event
 
-                    # Parse to accumulate content for history
+                    # Parse SSE events to accumulate content and extract usage
                     if event.startswith("data: ") and "data: [DONE]" not in event:
                         try:
                             chunk_data = json.loads(event[6:].strip())
+
+                            # Accumulate content from deltas
                             delta = chunk_data.get("choices", [{}])[0].get("delta", {})
                             if "content" in delta:
                                 accumulated_content += delta["content"]
+
+                            # Extract usage stats (typically in final event before [DONE])
+                            if "usage" in chunk_data:
+                                usage = chunk_data["usage"]
+                                tokens_in = usage.get("prompt_tokens", 0)
+                                tokens_out = usage.get("completion_tokens", 0)
                         except json.JSONDecodeError:
                             pass
 
@@ -807,11 +822,17 @@ async def chat_stream(request: ChatRequest):
                     "content": accumulated_content
                 })
 
-            # Send final metadata
+            # Send final metadata with token stats
             total_time = time.time() - start_time
+            tokens_per_sec = round(tokens_out / total_time, 1) if total_time > 0 else 0
+
             final_meta = {
                 "type": "stream_end",
                 "generation_time": round(total_time, 2),
+                "tokens_input": tokens_in,
+                "tokens_generated": tokens_out,
+                "tokens_total": tokens_in + tokens_out,
+                "tokens_per_second": tokens_per_sec,
                 "tools_used": tools_used if tools_used else None,
                 "device": get_device_string()
             }

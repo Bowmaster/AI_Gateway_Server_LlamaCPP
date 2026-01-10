@@ -290,7 +290,11 @@ class ChatClient:
 
             return {
                 "response": accumulated_response,
+                "tokens_input": metadata.get("tokens_input", 0),
+                "tokens_generated": metadata.get("tokens_generated", 0),
+                "tokens_total": metadata.get("tokens_total", 0),
                 "generation_time": metadata.get("generation_time", 0),
+                "tokens_per_second": metadata.get("tokens_per_second", 0),
                 "tools_used": metadata.get("tools_used"),
                 "device": metadata.get("device", "Unknown")
             }
@@ -924,7 +928,9 @@ class ChatClient:
                             console.print(f"[dim]Tools: {', '.join(result['tools_used'])}[/dim]")
 
                         console.print(
-                            f"[dim]({result['generation_time']:.2f}s | {result['device']})[/dim]"
+                            f"[dim]({result['tokens_input']} in -> {result['tokens_generated']} out -> "
+                            f"{result['tokens_total']} total | "
+                            f"{result['generation_time']:.2f}s @ {result['tokens_per_second']:.1f} tok/s | {result['device']})[/dim]"
                         )
                 else:
                     # Batch mode - wait for full response
