@@ -199,15 +199,153 @@ def test_system_prompt():
                 timeout=5
             )
             print(f"\n  (System prompt reset to default)")
-            
+
             return True
         else:
             print(f"✗ Failed: {response.status_code}")
             return False
-            
+
     except Exception as e:
         print(f"✗ Error: {e}")
         return False
+
+
+def test_streaming_simple():
+    """Test 6: Streaming chat without tools"""
+    print_section("TEST 6: Streaming Chat (No Tools)")
+
+    payload = {
+        "messages": [
+            {"role": "user", "content": "Count from 1 to 5, one number per line."}
+        ],
+        "enable_tools": False,
+        "max_tokens": 100
+    }
+
+    try:
+        print("Sending streaming request...")
+        accumulated = ""
+        token_count = 0
+        metadata = {}
+
+        with requests.post(
+            f"{SERVER_URL}/chat/stream",
+            json=payload,
+            stream=True,
+            timeout=60
+        ) as response:
+            if response.status_code != 200:
+                print(f"  ✗ Failed: {response.status_code}")
+                return False
+
+            for line in response.iter_lines():
+                if not line:
+                    continue
+
+                line = line.decode('utf-8')
+                if line.startswith("data: "):
+                    data_str = line[6:]
+                    if data_str == "[DONE]":
+                        break
+
+                    try:
+                        import json
+                        chunk = json.loads(data_str)
+
+                        # Check for metadata
+                        if chunk.get("type") == "stream_end":
+                            metadata = chunk
+                            continue
+
+                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        if "content" in delta:
+                            token = delta["content"]
+                            accumulated += token
+                            token_count += 1
+                            print(token, end="", flush=True)
+                    except json.JSONDecodeError:
+                        pass
+
+        print(f"\n\n  ✓ Received {token_count} tokens")
+        print(f"  Response preview: {accumulated[:80]}...")
+        if metadata:
+            print(f"  Generation time: {metadata.get('generation_time', 'N/A')}s")
+            print(f"  Device: {metadata.get('device', 'N/A')}")
+        return True
+
+    except Exception as e:
+        print(f"  ✗ Error: {e}")
+        return False
+
+
+def test_streaming_with_tools():
+    """Test 7: Streaming with tools (hybrid mode)"""
+    print_section("TEST 7: Streaming with Tools (Hybrid)")
+
+    payload = {
+        "messages": [
+            {"role": "user", "content": "What is the IP address of example.com?"}
+        ],
+        "enable_tools": True,
+        "max_tokens": 200
+    }
+
+    try:
+        print("Sending streaming request with tools enabled...")
+        accumulated = ""
+        tools_used = None
+        metadata = {}
+
+        with requests.post(
+            f"{SERVER_URL}/chat/stream",
+            json=payload,
+            stream=True,
+            timeout=120
+        ) as response:
+            if response.status_code != 200:
+                print(f"  ✗ Failed: {response.status_code}")
+                return False
+
+            for line in response.iter_lines():
+                if not line:
+                    continue
+
+                line = line.decode('utf-8')
+                if line.startswith("data: "):
+                    data_str = line[6:]
+                    if data_str == "[DONE]":
+                        break
+
+                    try:
+                        import json
+                        chunk = json.loads(data_str)
+
+                        if chunk.get("type") == "stream_end":
+                            metadata = chunk
+                            tools_used = chunk.get("tools_used")
+                            continue
+
+                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        if "content" in delta:
+                            accumulated += delta["content"]
+                            print(delta["content"], end="", flush=True)
+                    except json.JSONDecodeError:
+                        pass
+
+        print(f"\n\n  ✓ Streaming complete")
+        print(f"  Response preview: {accumulated[:100]}...")
+        if tools_used:
+            print(f"  Tools used: {', '.join(tools_used)}")
+        else:
+            print(f"  Note: No tools were used")
+        if metadata:
+            print(f"  Generation time: {metadata.get('generation_time', 'N/A')}s")
+        return True
+
+    except Exception as e:
+        print(f"  ✗ Error: {e}")
+        return False
+
 
 def main():
     print("\n" + "=" * 60)
@@ -247,7 +385,17 @@ def main():
     # Test 5: System prompt
     result = test_system_prompt()
     results.append(("System Prompt", result))
-    
+    time.sleep(1)
+
+    # Test 6: Streaming (no tools)
+    result = test_streaming_simple()
+    results.append(("Streaming (No Tools)", result))
+    time.sleep(1)
+
+    # Test 7: Streaming with tools (hybrid)
+    result = test_streaming_with_tools()
+    results.append(("Streaming (Hybrid)", result))
+
     # Summary
     print_section("TEST SUMMARY")
     
