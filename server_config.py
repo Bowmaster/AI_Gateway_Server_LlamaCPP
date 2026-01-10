@@ -278,6 +278,14 @@ TOOLS_REQUIRING_APPROVAL = [
     "read_webpage",
 ]
 
+# Web Content Security
+# Sanitize web content to prevent prompt injection attacks
+WEB_CONTENT_SANITIZATION = True  # Set to False to disable (not recommended)
+
+# Aggressive sanitization removes more patterns but may affect legitimate content
+# Set to False for less aggressive filtering if you encounter false positives
+WEB_CONTENT_AGGRESSIVE_SANITIZATION = True
+
 # ============================================================================
 # Streaming Configuration
 # ============================================================================

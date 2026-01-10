@@ -1229,6 +1229,112 @@ def find_in_files(path: str, search_text: str, file_pattern: str = "*", case_sen
         return {"path": path, "search_text": search_text, "error": str(e)}
 
 # =============================================================================
+# WEB TOOLS - SECURITY UTILITIES
+# =============================================================================
+
+def sanitize_web_content(text: str, aggressive: bool = True) -> str:
+    """
+    Sanitize web content to prevent prompt injection attacks.
+
+    This function removes or neutralizes patterns that could be used to
+    manipulate the LLM through malicious web content.
+
+    Args:
+        text: Raw text extracted from webpage
+        aggressive: If True, apply stricter filtering (default: True)
+
+    Returns:
+        Sanitized text safe for LLM consumption
+
+    Security measures:
+    - Removes role-like prefixes (USER:, ASSISTANT:, SYSTEM:, etc.)
+    - Filters instruction-like patterns
+    - Removes excessive whitespace/newlines
+    - Neutralizes common prompt injection attempts
+    - Removes suspicious Unicode characters
+    """
+    import re
+
+    if not text:
+        return text
+
+    # 1. Remove common role prefixes that could confuse the LLM
+    # Matches patterns like "USER:", "ASSISTANT:", "SYSTEM:", "Human:", "AI:", etc.
+    role_patterns = [
+        r'^\s*(USER|HUMAN|PERSON):\s*',
+        r'^\s*(ASSISTANT|AI|BOT|CLAUDE|GPT):\s*',
+        r'^\s*(SYSTEM|INSTRUCTION|ADMIN|ROOT):\s*',
+        r'\n\s*(USER|HUMAN|PERSON):\s*',
+        r'\n\s*(ASSISTANT|AI|BOT|CLAUDE|GPT):\s*',
+        r'\n\s*(SYSTEM|INSTRUCTION|ADMIN|ROOT):\s*',
+    ]
+
+    for pattern in role_patterns:
+        text = re.sub(pattern, '\n', text, flags=re.IGNORECASE | re.MULTILINE)
+
+    # 2. Remove instruction-like patterns
+    if aggressive:
+        # Patterns that look like system instructions
+        instruction_patterns = [
+            r'\[INST(?:RUCTION)?\].*?\[/INST(?:RUCTION)?\]',  # [INSTRUCTION] tags
+            r'<\|.*?\|>',  # Special tokens like <|im_start|>
+            r'<<SYS>>.*?<</SYS>>',  # Llama-style system tags
+            r'\[SYSTEM\].*?\[/SYSTEM\]',  # System message tags
+            r'```(?:system|instruction|prompt).*?```',  # Code blocks with suspicious labels
+        ]
+
+        for pattern in instruction_patterns:
+            text = re.sub(pattern, '', text, flags=re.IGNORECASE | re.DOTALL)
+
+    # 3. Remove attempts to break out of context
+    breakout_patterns = [
+        r'Ignore (?:all )?previous (?:instructions|commands|prompts)',
+        r'Disregard (?:all )?(?:above|previous|prior)',
+        r'Forget (?:all )?(?:previous|prior) (?:instructions|commands)',
+        r'New (?:instruction|command|directive|task):',
+        r'Override (?:previous )?(?:instructions|settings)',
+        r'IMPORTANT:.*?(?:you must|you should|execute|run)',
+    ]
+
+    for pattern in breakout_patterns:
+        text = re.sub(pattern, '[filtered content]', text, flags=re.IGNORECASE)
+
+    # 4. Normalize whitespace (prevents hidden instructions via Unicode spaces)
+    # Replace various Unicode whitespace with regular space
+    text = re.sub(r'[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000\uFEFF]+', ' ', text)
+
+    # 5. Remove excessive newlines (could be used to create fake chat transcripts)
+    text = re.sub(r'\n{4,}', '\n\n\n', text)  # Max 3 consecutive newlines
+
+    # 6. Remove zero-width characters (could hide instructions)
+    zero_width_chars = [
+        '\u200B',  # Zero-width space
+        '\u200C',  # Zero-width non-joiner
+        '\u200D',  # Zero-width joiner
+        '\u2060',  # Word joiner
+        '\uFEFF',  # Zero-width no-break space
+    ]
+    for char in zero_width_chars:
+        text = text.replace(char, '')
+
+    # 7. Limit excessive repetition (could be used for token exhaustion attacks)
+    # Replace 10+ repeated characters with just 3
+    text = re.sub(r'(.)\1{9,}', r'\1\1\1', text)
+
+    # 8. Remove content that looks like prompt delimiters
+    delimiter_patterns = [
+        r'={10,}',  # Long sequences of equals signs
+        r'-{10,}',  # Long sequences of dashes
+        r'#{5,}',   # Multiple hash symbols
+    ]
+
+    for pattern in delimiter_patterns:
+        text = re.sub(pattern, '---', text)
+
+    return text.strip()
+
+
+# =============================================================================
 # WEB TOOLS
 # =============================================================================
 
@@ -1264,6 +1370,7 @@ def web_search(query: str, max_results: int = 5) -> dict:
     """
     try:
         from duckduckgo_search import DDGS
+        import server_config as config
 
         # Limit max_results to prevent overwhelming context
         max_results = min(max_results, 10)
@@ -1277,17 +1384,37 @@ def web_search(query: str, max_results: int = 5) -> dict:
                 if idx >= max_results:
                     break
 
+                title = result.get("title", "")
+                snippet = result.get("body", "")
+                url = result.get("href", "")
+
+                # Sanitize title and snippet to prevent prompt injection
+                if config.WEB_CONTENT_SANITIZATION:
+                    aggressive = config.WEB_CONTENT_AGGRESSIVE_SANITIZATION
+                    title = sanitize_web_content(title, aggressive=aggressive)
+                    snippet = sanitize_web_content(snippet, aggressive=aggressive)
+
                 results.append({
-                    "title": result.get("title", ""),
-                    "snippet": result.get("body", ""),
-                    "url": result.get("href", ""),
+                    "title": title,
+                    "snippet": snippet,
+                    "url": url,
                 })
+
+        # Wrap results in clear delimiters for LLM safety
+        formatted_results = []
+        for i, result in enumerate(results, 1):
+            formatted_results.append({
+                "title": result["title"],
+                "snippet": f"<web_search_result>\n{result['snippet']}\n</web_search_result>",
+                "url": result["url"]
+            })
 
         return {
             "query": query,
-            "results": results,
-            "count": len(results),
-            "success": True
+            "results": formatted_results,
+            "count": len(formatted_results),
+            "success": True,
+            "security_note": "Content has been sanitized to prevent prompt injection attacks" if config.WEB_CONTENT_SANITIZATION else None
         }
 
     except ImportError:
@@ -1340,6 +1467,7 @@ def read_webpage(url: str, max_chars: int = 3000) -> dict:
     try:
         import requests
         from bs4 import BeautifulSoup
+        import server_config as config
 
         # Validate URL
         if not url.startswith(('http://', 'https://')):
@@ -1371,20 +1499,38 @@ def read_webpage(url: str, max_chars: int = 3000) -> dict:
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         clean_text = '\n'.join(lines)
 
-        # Truncate if needed
-        if len(clean_text) > max_chars:
-            clean_text = clean_text[:max_chars] + f"\n\n[Content truncated at {max_chars} characters]"
+        # Sanitize content BEFORE truncation to prevent injection in truncated content
+        if config.WEB_CONTENT_SANITIZATION:
+            aggressive = config.WEB_CONTENT_AGGRESSIVE_SANITIZATION
+            clean_text = sanitize_web_content(clean_text, aggressive=aggressive)
 
-        # Get title
+        # Truncate if needed (after sanitization to get accurate length)
+        was_truncated = False
+        if len(clean_text) > max_chars:
+            clean_text = clean_text[:max_chars]
+            was_truncated = True
+
+        # Get title and sanitize it too
         title = soup.title.string if soup.title else "No title"
+        if config.WEB_CONTENT_SANITIZATION:
+            title = sanitize_web_content(title, aggressive=aggressive)
+
+        # Wrap content in clear delimiters to help LLM understand it's external content
+        wrapped_content = f"""<webpage_content source="{url}">
+{clean_text}
+</webpage_content>"""
+
+        if was_truncated:
+            wrapped_content += f"\n\n[Content truncated at {max_chars} characters for token limit]"
 
         return {
             "url": url,
             "title": title,
-            "content": clean_text,
+            "content": wrapped_content,
             "length": len(clean_text),
-            "truncated": len(clean_text) > max_chars,
-            "success": True
+            "truncated": was_truncated,
+            "success": True,
+            "security_note": "Content has been sanitized to prevent prompt injection attacks" if config.WEB_CONTENT_SANITIZATION else None
         }
 
     except requests.exceptions.Timeout:
