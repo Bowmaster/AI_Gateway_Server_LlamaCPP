@@ -9,6 +9,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
+from rich.live import Live
 from rich import box
 from pathlib import Path
 import json
@@ -25,6 +26,7 @@ class ChatClient:
         self.server_url = server_url
         self.conversation_history: List[Dict[str, str]] = []
         self.system_prompt: Optional[str] = None
+        self.streaming_enabled: bool = True  # Streaming enabled by default
         
     def _make_request(self, method: str, endpoint: str, json_data: dict = None,
                       timeout: int = 30, error_prefix: str = "Request") -> Optional[Dict]:
@@ -167,7 +169,145 @@ class ChatClient:
             console.print(f"[red]Unexpected error: {e}[/red]")
             self.conversation_history.pop()
             return None
-    
+
+    def send_message_streaming(
+        self,
+        message: str,
+        temperature: float = 0.7,
+        max_tokens: int = 8192
+    ) -> Optional[Dict]:
+        """
+        Send a message with streaming response.
+
+        Uses SSE to receive tokens as they're generated and displays
+        them in real-time using Rich Live.
+
+        Args:
+            message: User message
+            temperature: Generation temperature
+            max_tokens: Maximum tokens to generate
+
+        Returns:
+            Final result dictionary with full response
+        """
+        # Add user message to history
+        self.conversation_history.append({
+            "role": "user",
+            "content": message
+        })
+
+        payload = {
+            "messages": self.conversation_history,
+            "temperature": temperature,
+            "max_tokens": max_tokens
+        }
+
+        if self.system_prompt:
+            payload["system_prompt"] = self.system_prompt
+
+        try:
+            accumulated_response = ""
+            metadata = {}
+
+            with requests.post(
+                f"{self.server_url}/chat/stream",
+                json=payload,
+                stream=True,
+                timeout=300
+            ) as response:
+                if response.status_code != 200:
+                    try:
+                        error = response.json().get("detail", "Unknown error")
+                    except:
+                        error = f"HTTP {response.status_code}"
+                    console.print(f"[red]Error: {error}[/red]")
+                    self.conversation_history.pop()
+                    return None
+
+                # Use Rich Live for real-time display
+                with Live(
+                    Panel("", title="[bold green]Assistant[/bold green]", border_style="green"),
+                    console=console,
+                    refresh_per_second=30,
+                    transient=True
+                ) as live:
+                    for line in response.iter_lines():
+                        if not line:
+                            continue
+
+                        line = line.decode('utf-8')
+                        if not line.startswith("data: "):
+                            continue
+
+                        data_str = line[6:]  # Remove "data: " prefix
+
+                        if data_str == "[DONE]":
+                            break
+
+                        try:
+                            chunk = json.loads(data_str)
+
+                            # Check for errors
+                            if "error" in chunk:
+                                console.print(f"[red]Error: {chunk['error']}[/red]")
+                                self.conversation_history.pop()
+                                return None
+
+                            # Check for metadata (stream_end)
+                            if chunk.get("type") == "stream_end":
+                                metadata = chunk
+                                continue
+
+                            # Extract content delta
+                            delta = chunk.get("choices", [{}])[0].get("delta", {})
+                            if "content" in delta:
+                                token = delta["content"]
+                                accumulated_response += token
+
+                                # Update live display
+                                live.update(Panel(
+                                    accumulated_response,
+                                    title="[bold green]Assistant[/bold green]",
+                                    border_style="green"
+                                ))
+
+                        except json.JSONDecodeError:
+                            continue
+
+            # Show final panel (non-transient)
+            console.print(Panel(
+                accumulated_response,
+                title="[bold green]Assistant[/bold green]",
+                border_style="green",
+                box=box.ROUNDED
+            ))
+
+            # Add to history
+            self.conversation_history.append({
+                "role": "assistant",
+                "content": accumulated_response
+            })
+
+            return {
+                "response": accumulated_response,
+                "generation_time": metadata.get("generation_time", 0),
+                "tools_used": metadata.get("tools_used"),
+                "device": metadata.get("device", "Unknown")
+            }
+
+        except requests.exceptions.Timeout:
+            console.print("[red]Request timed out.[/red]")
+            self.conversation_history.pop()
+            return None
+        except requests.exceptions.ConnectionError:
+            console.print(f"[red]Cannot connect to server at {self.server_url}[/red]")
+            self.conversation_history.pop()
+            return None
+        except Exception as e:
+            console.print(f"[red]Streaming error: {e}[/red]")
+            self.conversation_history.pop()
+            return None
+
     def send_command(self, command: str, value: Optional[str] = None) -> Optional[Dict]:
         """Send a command to the server"""
         payload = {"command": command}
@@ -424,6 +564,20 @@ class ChatClient:
             self.show_hardware()
             return True
 
+        elif cmd == "stream":
+            if value is None:
+                status = "[green]enabled[/green]" if self.streaming_enabled else "[yellow]disabled[/yellow]"
+                console.print(f"[cyan]Streaming: {status}[/cyan]")
+            elif value.lower() in ["on", "enable", "enabled", "true", "1"]:
+                self.streaming_enabled = True
+                console.print("[green]Streaming enabled - tokens will appear as generated[/green]")
+            elif value.lower() in ["off", "disable", "disabled", "false", "0"]:
+                self.streaming_enabled = False
+                console.print("[yellow]Streaming disabled - using batch mode[/yellow]")
+            else:
+                console.print("[red]Usage: /stream [on|off][/red]")
+            return True
+
         # Server commands
         elif cmd == "system":
             if value is None:
@@ -609,6 +763,8 @@ class ChatClient:
   /export-ft <path>    - Export for fine-tuning (JSONL)
   /status              - Show server status
   /hardware            - Show server hardware configuration
+  /stream              - Show streaming mode status
+  /stream <on|off>     - Enable/disable streaming (on = token-by-token)
 
 [bold]Server Commands:[/bold]
   /system              - Show system prompt
@@ -740,41 +896,57 @@ class ChatClient:
                 health = response.json()
                 console.print(f"[cyan]Model: {health['model_key']}[/cyan]")
                 console.print(f"[dim]GPU Layers: {health.get('n_gpu_layers', 'N/A')} | Device: {health['device']}[/dim]")
-                console.print("[dim]Type /model to switch | /help for commands[/dim]\n")
+                stream_status = "[green]on[/green]" if self.streaming_enabled else "[yellow]off[/yellow]"
+                console.print(f"[dim]Streaming: {stream_status} | Type /model to switch | /help for commands[/dim]\n")
         except:
             pass
-        
+
         while True:
             try:
                 user_input = Prompt.ask("\n[bold blue]You[/bold blue]").strip()
-                
+
                 if not user_input:
                     continue
-                
+
                 if user_input.startswith("/"):
                     if not self.handle_slash_command(user_input):
                         break
                     continue
-                
-                console.print("\n[dim]Generating...[/dim]")
-                result = self.send_message(user_input)
-                
-                if result:
-                    console.print(Panel(
-                        result["response"],
-                        title="[bold green]Assistant[/bold green]",
-                        border_style="green",
-                        box=box.ROUNDED
-                    ))
-                    
-                    if result.get("tools_used"):
-                        console.print(f"[dim]🔧 Tools: {', '.join(result['tools_used'])}[/dim]")
-                    
-                    console.print(
-                        f"[dim]({result['tokens_input']} in → {result['tokens_generated']} out → "
-                        f"{result['tokens_total']} total | "
-                        f"{result['generation_time']:.2f}s @ {result['tokens_per_second']:.1f} tok/s | {result['device']})[/dim]"
-                    )
+
+                if self.streaming_enabled:
+                    # Streaming mode - tokens appear as generated
+                    console.print("\n[dim]Streaming...[/dim]")
+                    result = self.send_message_streaming(user_input)
+
+                    if result:
+                        # Panel already shown by streaming method
+                        if result.get("tools_used"):
+                            console.print(f"[dim]Tools: {', '.join(result['tools_used'])}[/dim]")
+
+                        console.print(
+                            f"[dim]({result['generation_time']:.2f}s | {result['device']})[/dim]"
+                        )
+                else:
+                    # Batch mode - wait for full response
+                    console.print("\n[dim]Generating...[/dim]")
+                    result = self.send_message(user_input)
+
+                    if result:
+                        console.print(Panel(
+                            result["response"],
+                            title="[bold green]Assistant[/bold green]",
+                            border_style="green",
+                            box=box.ROUNDED
+                        ))
+
+                        if result.get("tools_used"):
+                            console.print(f"[dim]Tools: {', '.join(result['tools_used'])}[/dim]")
+
+                        console.print(
+                            f"[dim]({result['tokens_input']} in -> {result['tokens_generated']} out -> "
+                            f"{result['tokens_total']} total | "
+                            f"{result['generation_time']:.2f}s @ {result['tokens_per_second']:.1f} tok/s | {result['device']})[/dim]"
+                        )
             
             except KeyboardInterrupt:
                 console.print("\n\n[yellow]Interrupted. Type /exit to quit.[/yellow]")

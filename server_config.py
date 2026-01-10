@@ -260,6 +260,17 @@ ENABLE_TOOLS = True
 MAX_TOOL_ITERATIONS = 5
 
 # ============================================================================
+# Streaming Configuration
+# ============================================================================
+
+# Enable streaming by default for new clients
+STREAMING_ENABLED_DEFAULT = True
+
+# Delay between chunks for simulated streaming of buffered responses (seconds)
+# Used when tools are enabled and response is buffered before streaming
+STREAMING_CHUNK_DELAY = 0.001  # 1ms
+
+# ============================================================================
 # Logging
 # ============================================================================
 

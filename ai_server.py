@@ -4,15 +4,17 @@ FastAPI server that manages llama-server and provides chat interface
 """
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, AsyncGenerator
 import logging
 import sys
 import signal
 import uvicorn
 import json
 import requests
+import httpx
+import asyncio
 
 import server_config as config
 from llama_manager import LlamaServerManager
@@ -234,6 +236,65 @@ def call_llama_server(messages: List[Dict], **kwargs) -> Dict:
         raise HTTPException(status_code=504, detail="Request to llama-server timed out")
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=503, detail=f"Failed to reach llama-server: {str(e)}")
+
+
+async def call_llama_server_streaming(
+    messages: List[Dict],
+    **kwargs
+) -> AsyncGenerator[str, None]:
+    """
+    Call llama-server with streaming enabled, yielding SSE events.
+
+    Args:
+        messages: List of message dictionaries
+        **kwargs: Additional parameters (temperature, max_tokens, etc.)
+
+    Yields:
+        SSE-formatted strings: "data: {...}\n\n"
+    """
+    if not state.llama_manager or not state.llama_manager.is_healthy():
+        yield f'data: {{"error": "llama-server is not running"}}\n\n'
+        return
+
+    llama_url = state.llama_manager.server_url
+
+    payload = {
+        "messages": messages,
+        "temperature": kwargs.get("temperature", config.DEFAULT_TEMPERATURE),
+        "max_tokens": kwargs.get("max_tokens", config.DEFAULT_MAX_TOKENS),
+        "top_p": kwargs.get("top_p", config.DEFAULT_TOP_P),
+        "top_k": kwargs.get("top_k", config.DEFAULT_TOP_K),
+        "repeat_penalty": kwargs.get("repeat_penalty", config.DEFAULT_REPEAT_PENALTY),
+        "stream": True,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            async with client.stream(
+                "POST",
+                f"{llama_url}/v1/chat/completions",
+                json=payload
+            ) as response:
+                if response.status_code != 200:
+                    error_text = await response.aread()
+                    yield f'data: {{"error": "llama-server error: {error_text.decode()}"}}\n\n'
+                    return
+
+                async for line in response.aiter_lines():
+                    if line.startswith("data: "):
+                        # Forward SSE event from llama-server
+                        yield f"{line}\n\n"
+
+                        # Check for completion signal
+                        if line == "data: [DONE]":
+                            break
+
+    except httpx.TimeoutException:
+        yield f'data: {{"error": "Request to llama-server timed out"}}\n\n'
+    except Exception as e:
+        logger.error(f"Streaming error: {e}", exc_info=True)
+        yield f'data: {{"error": "Streaming error: {str(e)}"}}\n\n'
+
 
 # ============================================================================
 # Startup/Shutdown
@@ -606,6 +667,173 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         state.is_generating = False
+
+
+@app.post("/chat/stream")
+@require_llama_server
+@require_not_generating
+async def chat_stream(request: ChatRequest):
+    """
+    Streaming chat endpoint with SSE responses.
+
+    When tools are enabled, the first response is buffered to check for tool calls.
+    If tool calls are detected, tool loop executes non-streaming, then final
+    response is streamed character-by-character.
+
+    When tools are disabled, pure streaming from first token.
+    """
+    if state.shutdown_requested:
+        raise HTTPException(status_code=503, detail="Server shutting down")
+
+    tools_enabled = request.enable_tools if request.enable_tools is not None else state.tools_enabled
+
+    async def generate_stream() -> AsyncGenerator[str, None]:
+        import time
+        start_time = time.time()
+
+        try:
+            state.is_generating = True
+
+            # Update conversation history from request
+            state.conversation_history = [
+                {"role": m.role, "content": m.content} for m in request.messages
+            ]
+
+            messages = build_messages_for_llama(request.system_prompt)
+            tools_used = []
+            accumulated_content = ""
+
+            if tools_enabled:
+                # Hybrid mode: buffer first response for tool detection
+                formatted_tools = [
+                    {"type": "function", "function": tool}
+                    for tool in tools.get_available_tools()
+                ]
+
+                iterations = 0
+                max_iterations = config.MAX_TOOL_ITERATIONS
+
+                while iterations < max_iterations:
+                    iterations += 1
+                    logger.info(f"Streaming hybrid mode: iteration {iterations}/{max_iterations}")
+
+                    # Use non-streaming for tool loop
+                    llama_response = call_llama_server(
+                        messages=messages,
+                        temperature=request.temperature,
+                        max_tokens=request.max_tokens,
+                        top_p=request.top_p,
+                        top_k=request.top_k,
+                        repeat_penalty=request.repeat_penalty,
+                        tools=formatted_tools
+                    )
+
+                    choice = llama_response["choices"][0]
+                    message = choice["message"]
+                    tool_calls = message.get("tool_calls", [])
+
+                    if not tool_calls:
+                        # No tools - we have the final response
+                        accumulated_content = message.get("content", "")
+                        break
+
+                    # Execute tools
+                    messages.append({
+                        "role": "assistant",
+                        "content": message.get("content", ""),
+                        "tool_calls": tool_calls
+                    })
+
+                    for tool_call in tool_calls:
+                        function_name = tool_call["function"]["name"]
+                        arguments = json.loads(tool_call["function"]["arguments"])
+                        tool_call_id = tool_call["id"]
+
+                        try:
+                            result = tools.execute_tool(function_name, arguments)
+                            key_param = tools.get_tool_key_param(function_name)
+                            if key_param and key_param in arguments:
+                                tools_used.append(f"{function_name}({arguments[key_param]})")
+                            else:
+                                tools_used.append(function_name)
+                        except Exception as e:
+                            result = {"error": str(e)}
+
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "content": json.dumps(result)
+                        })
+
+                # Stream the buffered response character-by-character
+                for i, char in enumerate(accumulated_content):
+                    chunk = {
+                        "choices": [{
+                            "delta": {"content": char},
+                            "index": 0
+                        }]
+                    }
+                    yield f"data: {json.dumps(chunk)}\n\n"
+                    # Small delay every 20 chars for smoother streaming effect
+                    if i % 20 == 0:
+                        await asyncio.sleep(0.001)
+
+            else:
+                # Pure streaming mode (no tools)
+                async for event in call_llama_server_streaming(
+                    messages=messages,
+                    temperature=request.temperature,
+                    max_tokens=request.max_tokens,
+                    top_p=request.top_p,
+                    top_k=request.top_k,
+                    repeat_penalty=request.repeat_penalty
+                ):
+                    yield event
+
+                    # Parse to accumulate content for history
+                    if event.startswith("data: ") and "data: [DONE]" not in event:
+                        try:
+                            chunk_data = json.loads(event[6:].strip())
+                            delta = chunk_data.get("choices", [{}])[0].get("delta", {})
+                            if "content" in delta:
+                                accumulated_content += delta["content"]
+                        except json.JSONDecodeError:
+                            pass
+
+            # Update conversation history with accumulated response
+            if accumulated_content:
+                state.conversation_history.append({
+                    "role": "assistant",
+                    "content": accumulated_content
+                })
+
+            # Send final metadata
+            total_time = time.time() - start_time
+            final_meta = {
+                "type": "stream_end",
+                "generation_time": round(total_time, 2),
+                "tools_used": tools_used if tools_used else None,
+                "device": get_device_string()
+            }
+            yield f"data: {json.dumps(final_meta)}\n\n"
+            yield "data: [DONE]\n\n"
+
+        except Exception as e:
+            logger.error(f"Streaming error: {e}", exc_info=True)
+            yield f'data: {{"error": "{str(e)}"}}\n\n'
+        finally:
+            state.is_generating = False
+
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
 
 @app.post("/command", response_model=CommandResponse)
 async def execute_command(request: CommandRequest):
