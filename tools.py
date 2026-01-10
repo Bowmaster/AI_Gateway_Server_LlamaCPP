@@ -1227,3 +1227,192 @@ def find_in_files(path: str, search_text: str, file_pattern: str = "*", case_sen
 
     except Exception as e:
         return {"path": path, "search_text": search_text, "error": str(e)}
+
+# =============================================================================
+# WEB TOOLS
+# =============================================================================
+
+@tool(
+    name="web_search",
+    description="Search the web for current information using DuckDuckGo. Use this when you need up-to-date information, facts, news, or answers that are beyond your knowledge cutoff. Returns titles, snippets, and URLs.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "The search query (e.g., 'Python 3.12 new features', 'current weather NYC', 'latest AI news')"
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Maximum number of search results to return (default: 5, max: 10)"
+            }
+        },
+        "required": ["query"]
+    },
+    key_param="query"
+)
+def web_search(query: str, max_results: int = 5) -> dict:
+    """
+    Search the web using DuckDuckGo.
+
+    Args:
+        query: Search query string
+        max_results: Maximum number of results (default: 5, max: 10)
+
+    Returns:
+        Dict with search results containing title, snippet, and URL
+    """
+    try:
+        from duckduckgo_search import DDGS
+
+        # Limit max_results to prevent overwhelming context
+        max_results = min(max_results, 10)
+
+        # Perform search
+        results = []
+        with DDGS() as ddgs:
+            search_results = ddgs.text(query, max_results=max_results)
+
+            for idx, result in enumerate(search_results):
+                if idx >= max_results:
+                    break
+
+                results.append({
+                    "title": result.get("title", ""),
+                    "snippet": result.get("body", ""),
+                    "url": result.get("href", ""),
+                })
+
+        return {
+            "query": query,
+            "results": results,
+            "count": len(results),
+            "success": True
+        }
+
+    except ImportError:
+        return {
+            "query": query,
+            "results": [],
+            "count": 0,
+            "success": False,
+            "error": "duckduckgo-search library not installed. Install with: pip install duckduckgo-search"
+        }
+    except Exception as e:
+        return {
+            "query": query,
+            "results": [],
+            "count": 0,
+            "success": False,
+            "error": f"Search failed: {str(e)}"
+        }
+
+@tool(
+    name="read_webpage",
+    description="Fetch and extract the main text content from a webpage URL. Use this to read articles, documentation, or any web content. Returns clean text without HTML markup.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "The full URL to fetch (must start with http:// or https://)"
+            },
+            "max_chars": {
+                "type": "integer",
+                "description": "Maximum characters to return (default: 3000, helps with context limits)"
+            }
+        },
+        "required": ["url"]
+    },
+    key_param="url"
+)
+def read_webpage(url: str, max_chars: int = 3000) -> dict:
+    """
+    Fetch and extract text content from a webpage.
+
+    Args:
+        url: URL to fetch
+        max_chars: Maximum characters to return (default: 3000)
+
+    Returns:
+        Dict with webpage content and metadata
+    """
+    try:
+        import requests
+        from bs4 import BeautifulSoup
+
+        # Validate URL
+        if not url.startswith(('http://', 'https://')):
+            return {
+                "url": url,
+                "content": "",
+                "success": False,
+                "error": "URL must start with http:// or https://"
+            }
+
+        # Fetch webpage
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+
+        # Parse HTML
+        soup = BeautifulSoup(response.content, 'lxml')
+
+        # Remove script and style elements
+        for script in soup(["script", "style", "nav", "footer", "header"]):
+            script.decompose()
+
+        # Get text
+        text = soup.get_text(separator='\n', strip=True)
+
+        # Clean up whitespace
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        clean_text = '\n'.join(lines)
+
+        # Truncate if needed
+        if len(clean_text) > max_chars:
+            clean_text = clean_text[:max_chars] + f"\n\n[Content truncated at {max_chars} characters]"
+
+        # Get title
+        title = soup.title.string if soup.title else "No title"
+
+        return {
+            "url": url,
+            "title": title,
+            "content": clean_text,
+            "length": len(clean_text),
+            "truncated": len(clean_text) > max_chars,
+            "success": True
+        }
+
+    except requests.exceptions.Timeout:
+        return {
+            "url": url,
+            "content": "",
+            "success": False,
+            "error": "Request timed out after 10 seconds"
+        }
+    except requests.exceptions.RequestException as e:
+        return {
+            "url": url,
+            "content": "",
+            "success": False,
+            "error": f"Failed to fetch URL: {str(e)}"
+        }
+    except ImportError as e:
+        missing_lib = "requests" if "requests" in str(e) else "beautifulsoup4"
+        return {
+            "url": url,
+            "content": "",
+            "success": False,
+            "error": f"{missing_lib} library not installed. Install with: pip install {missing_lib}"
+        }
+    except Exception as e:
+        return {
+            "url": url,
+            "content": "",
+            "success": False,
+            "error": f"Error reading webpage: {str(e)}"
+        }

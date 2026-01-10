@@ -112,40 +112,57 @@ class ChatClient:
     
     def send_message(self, message: str, temperature: float = 0.7, max_tokens: int = 8192) -> Optional[Dict]:
         """Send a message to the server"""
-        
+
         # Add user message to history
         self.conversation_history.append({
             "role": "user",
             "content": message
         })
-        
+
         # Prepare request
         payload = {
             "messages": self.conversation_history,
             "temperature": temperature,
             "max_tokens": max_tokens
         }
-        
+
         if self.system_prompt:
             payload["system_prompt"] = self.system_prompt
-        
+
         try:
             response = requests.post(
                 f"{self.server_url}/chat",
                 json=payload,
                 timeout=300
             )
-            
+
             if response.status_code == 200:
                 result = response.json()
-                
-                # Add assistant response to history
-                self.conversation_history.append({
-                    "role": "assistant",
-                    "content": result["response"]
-                })
-                
-                return result
+
+                # Check if this is an approval request
+                if result.get("approval_required"):
+                    # Handle tool approval flow
+                    approval_result = self._handle_tool_approval(result)
+                    if approval_result:
+                        # Add assistant response to history
+                        self.conversation_history.append({
+                            "role": "assistant",
+                            "content": approval_result["response"]
+                        })
+                        return approval_result
+                    else:
+                        # User denied or error occurred
+                        self.conversation_history.pop()
+                        return None
+                else:
+                    # Normal response
+                    # Add assistant response to history
+                    self.conversation_history.append({
+                        "role": "assistant",
+                        "content": result["response"]
+                    })
+                    return result
+
             elif response.status_code == 503:
                 error_detail = response.json().get("detail", "Server busy")
                 console.print(f"[yellow]{error_detail}[/yellow]")
@@ -156,7 +173,7 @@ class ChatClient:
                 console.print(f"[red]Error: {error}[/red]")
                 self.conversation_history.pop()
                 return None
-                
+
         except requests.exceptions.Timeout:
             console.print("[red]Request timed out.[/red]")
             self.conversation_history.pop()
@@ -168,6 +185,110 @@ class ChatClient:
         except Exception as e:
             console.print(f"[red]Unexpected error: {e}[/red]")
             self.conversation_history.pop()
+            return None
+
+    def _handle_tool_approval(self, approval_response: Dict) -> Optional[Dict]:
+        """
+        Handle tool approval flow by prompting user and sending decisions to server.
+
+        Args:
+            approval_response: ApprovalRequiredResponse from server
+
+        Returns:
+            Final ChatResponse after approval, or None if denied/error
+        """
+        tools_pending = approval_response.get("tools_pending", [])
+        message = approval_response.get("message", "")
+
+        console.print(f"\n[yellow bold]⚠ Tool Approval Required[/yellow bold]")
+        console.print(f"[yellow]{message}[/yellow]\n")
+
+        # Show pending tools
+        table = Table(title="Tools Requesting Approval", box=box.ROUNDED)
+        table.add_column("Tool", style="cyan", no_wrap=True)
+        table.add_column("Arguments", style="white")
+
+        for tool in tools_pending:
+            tool_name = tool.get("tool_name", "unknown")
+            arguments = tool.get("arguments", {})
+            args_str = json.dumps(arguments, indent=2)
+            table.add_row(tool_name, args_str)
+
+        console.print(table)
+        console.print()
+
+        # Prompt for approval
+        decisions = []
+        for tool in tools_pending:
+            tool_name = tool.get("tool_name", "unknown")
+            tool_call_id = tool.get("tool_call_id", "")
+            arguments = tool.get("arguments", {})
+
+            # Format arguments nicely
+            args_display = ", ".join([f"{k}={v}" for k, v in arguments.items()])
+
+            # Ask user
+            prompt_text = f"Approve [cyan]{tool_name}[/cyan]({args_display})?"
+            response = Prompt.ask(
+                prompt_text,
+                choices=["y", "n", "a", "d"],
+                default="y",
+                show_choices=True,
+                console=console
+            )
+
+            if response.lower() == 'a':
+                # Approve all remaining
+                for remaining_tool in tools_pending[len(decisions):]:
+                    decisions.append({
+                        "tool_call_id": remaining_tool.get("tool_call_id", ""),
+                        "approved": True
+                    })
+                break
+            elif response.lower() == 'd':
+                # Deny all remaining
+                for remaining_tool in tools_pending[len(decisions):]:
+                    decisions.append({
+                        "tool_call_id": remaining_tool.get("tool_call_id", ""),
+                        "approved": False
+                    })
+                break
+            else:
+                approved = response.lower() == 'y'
+                decisions.append({
+                    "tool_call_id": tool_call_id,
+                    "approved": approved
+                })
+
+        # Send approval decisions to server
+        try:
+            console.print("\n[dim]Sending approval decisions to server...[/dim]")
+
+            approval_payload = {"decisions": decisions}
+            response = requests.post(
+                f"{self.server_url}/chat/approve",
+                json=approval_payload,
+                timeout=300
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+
+                # Check if there's another approval required (chained approvals)
+                if result.get("approval_required"):
+                    return self._handle_tool_approval(result)
+                else:
+                    return result
+            else:
+                error = response.json().get("detail", "Unknown error")
+                console.print(f"[red]Error processing approval: {error}[/red]")
+                return None
+
+        except requests.exceptions.Timeout:
+            console.print("[red]Approval request timed out.[/red]")
+            return None
+        except requests.exceptions.RequestException as e:
+            console.print(f"[red]Failed to send approval: {e}[/red]")
             return None
 
     def send_message_streaming(

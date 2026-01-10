@@ -259,6 +259,25 @@ ENABLE_TOOLS = True
 # (prevents infinite tool loops)
 MAX_TOOL_ITERATIONS = 5
 
+# Tool Approval System
+# When enabled, tools in TOOLS_REQUIRING_APPROVAL will prompt for user confirmation
+TOOL_APPROVAL_MODE = True  # Set to False to disable approval prompts
+
+# List of tool names that require user approval before execution
+# This helps prevent accidental destructive operations and unintended web access
+TOOLS_REQUIRING_APPROVAL = [
+    # File/Directory Modification Tools
+    "write_file",
+    "delete_file",
+    "move_file",
+    "copy_file",
+    "create_directory",
+
+    # Web Access Tools (for safety and to prevent unexpected external calls)
+    "web_search",
+    "read_webpage",
+]
+
 # ============================================================================
 # Streaming Configuration
 # ============================================================================
