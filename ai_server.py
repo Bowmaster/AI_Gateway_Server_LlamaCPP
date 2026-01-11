@@ -372,6 +372,11 @@ async def startup_event():
     # Initialize llama manager
     state.llama_manager = LlamaServerManager(config.LLAMA_SERVER_CONFIG)
 
+    # Set system prompt for default model
+    state.system_prompt = config.get_system_prompt_for_model(config.DEFAULT_MODEL_KEY)
+    if state.system_prompt != config.DEFAULT_SYSTEM_PROMPT:
+        logger.info(f"Using model-specific system prompt for {config.DEFAULT_MODEL_KEY}")
+
     # Auto-start if configured
     if config.LLAMA_SERVER_CONFIG.get('auto_start', True):
         logger.info(f"Auto-starting llama-server with model: {config.DEFAULT_MODEL_KEY}")
@@ -512,6 +517,11 @@ async def switch_model(request: ModelSwitchRequest):
         if state.llama_manager.restart(identifier, use_hf=use_hf):
             state.current_model_key = request.model_key
             state.conversation_history = []
+
+            # Update system prompt for new model
+            state.system_prompt = config.get_system_prompt_for_model(request.model_key)
+            if state.system_prompt != config.DEFAULT_SYSTEM_PROMPT:
+                logger.info(f"Using model-specific system prompt for {request.model_key}")
 
             logger.info(f"✓ Switched to {request.model_key}")
 
@@ -1163,10 +1173,13 @@ async def execute_command(request: CommandRequest):
                 current_value=state.system_prompt
             )
         elif request.value.lower() == "reset":
-            state.system_prompt = config.DEFAULT_SYSTEM_PROMPT
+            # Reset to model-specific prompt (or default if no override)
+            state.system_prompt = config.get_system_prompt_for_model(state.current_model_key)
+            is_custom = state.system_prompt != config.DEFAULT_SYSTEM_PROMPT
+            msg = f"System prompt reset to {'model-specific' if is_custom else 'default'}"
             return CommandResponse(
                 status="ok",
-                message="System prompt reset to default",
+                message=msg,
                 current_value=state.system_prompt
             )
         else:
