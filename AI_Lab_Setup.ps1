@@ -113,12 +113,17 @@ if ($LASTEXITCODE -ne 0) {
 # Install server/client dependencies
 Write-Host ""
 Write-Host "Installing server/client dependencies..." -ForegroundColor Yellow
-pip install fastapi uvicorn requests rich psutil
+pip install fastapi uvicorn pydantic requests rich psutil httpx
 
 # Install optional but useful packages
 Write-Host ""
 Write-Host "Installing additional tools..." -ForegroundColor Yellow
 pip install huggingface_hub nvidia-ml-py  # HuggingFace downloads + GPU detection (replaces deprecated pynvml)
+
+# Install web search and scraping tools
+Write-Host ""
+Write-Host "Installing web search and scraping tools..." -ForegroundColor Yellow
+pip install duckduckgo-search beautifulsoup4 lxml
 
 # Verify installation
 Write-Host ""
@@ -154,7 +159,7 @@ except ImportError as e:
 
 print("\n=== Installed Packages ===\n")
 import pkg_resources
-packages = ['llama-cpp-python', 'fastapi', 'uvicorn', 'requests', 'rich', 'huggingface-hub']
+packages = ['llama-cpp-python', 'fastapi', 'uvicorn', 'pydantic', 'requests', 'rich', 'psutil', 'huggingface-hub', 'httpx', 'duckduckgo-search', 'beautifulsoup4', 'lxml']
 for package in packages:
     try:
         version = pkg_resources.get_distribution(package).version
