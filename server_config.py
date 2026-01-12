@@ -228,7 +228,26 @@ DEFAULT_MODEL_KEY = "qwen2.5-instruct-7b-q4"
 # Generation Defaults
 # ============================================================================
 
-DEFAULT_SYSTEM_PROMPT = "You are a helpful AI assistant."
+DEFAULT_SYSTEM_PROMPT = """You are a helpful AI assistant with access to tools for specific tasks.
+
+IMPORTANT - When to use tools:
+- Use tools ONLY when you need information or capabilities you don't have
+- For greetings, casual chat, or questions you can answer directly - just respond naturally WITHOUT tools
+- Examples of when to use tools: reading files, searching the web for current info, modifying files
+- Examples of when NOT to use tools: "Hello", "How are you?", "What is Python?", "Explain recursion"
+
+Think before calling tools: Do I actually need this tool to answer the question?"""
+
+# Model-specific system prompt overrides
+# Use this for models that need special instructions
+MODEL_SPECIFIC_PROMPTS = {
+    # Example: Some models are very tool-eager, need stricter guidance
+    # "qwen2.5-7b-q4": "You are a helpful assistant. Use tools sparingly - only when absolutely necessary.",
+
+    # Example: Some models need encouragement to use tools
+    # "ministral-8b-q4": "You are a helpful assistant with tools. Use them when they would help answer questions.",
+}
+
 DEFAULT_TEMPERATURE = 0.7
 #DEFAULT_MAX_TOKENS = 1024
 DEFAULT_MAX_TOKENS = 2048
@@ -258,6 +277,46 @@ ENABLE_TOOLS = True
 # Maximum number of tool iterations per request
 # (prevents infinite tool loops)
 MAX_TOOL_ITERATIONS = 5
+
+# Tool Approval System
+# When enabled, tools in TOOLS_REQUIRING_APPROVAL will prompt for user confirmation
+TOOL_APPROVAL_MODE = True  # Set to False to disable approval prompts
+
+# List of tool names that require user approval before execution
+# This helps prevent accidental destructive operations and unintended web access
+TOOLS_REQUIRING_APPROVAL = [
+    # File/Directory Modification Tools
+    "write_file",
+    "delete_file",
+    "move_file",
+    "copy_file",
+    "create_directory",
+
+    # Web Access Tools (for safety and to prevent unexpected external calls)
+    "web_search",
+    "read_webpage",
+]
+
+# Web Content Security
+# Sanitize web content to prevent prompt injection attacks
+WEB_CONTENT_SANITIZATION = True  # Set to False to disable (not recommended)
+
+# Aggressive sanitization removes more patterns but may affect legitimate content
+# Set to False for less aggressive filtering if you encounter false positives
+WEB_CONTENT_AGGRESSIVE_SANITIZATION = True
+
+# Helper function to get system prompt for current model
+def get_system_prompt_for_model(model_key: str) -> str:
+    """
+    Get the appropriate system prompt for a given model.
+
+    Args:
+        model_key: The model key (e.g., "qwen2.5-7b-q4")
+
+    Returns:
+        System prompt string (model-specific or default)
+    """
+    return MODEL_SPECIFIC_PROMPTS.get(model_key, DEFAULT_SYSTEM_PROMPT)
 
 # ============================================================================
 # Streaming Configuration

@@ -261,15 +261,43 @@ def _is_protected_path(path: str) -> bool:
     
     return False
 
+def _normalize_path(path: str) -> str:
+    """
+    Normalize and resolve a file path to an absolute path.
+
+    Features:
+    - Converts relative paths to absolute using current working directory
+    - Handles mixed path separators (/ and \\)
+    - Expands user home directory (~)
+    - Normalizes path for the current OS
+
+    Args:
+        path: Relative or absolute file path
+
+    Returns:
+        Absolute normalized path for current OS
+    """
+    # Expand user home directory if present (~)
+    path = os.path.expanduser(path)
+
+    # If path is already absolute, just normalize it
+    if os.path.isabs(path):
+        return os.path.normpath(path)
+
+    # Otherwise, resolve relative to current working directory
+    cwd = os.getcwd()
+    absolute_path = os.path.join(cwd, path)
+    return os.path.normpath(absolute_path)
+
 @tool(
     name="read_file",
-    description="Read and return the contents of a text file. Use this to examine code, configuration files, logs, or any text-based files.",
+    description="Read and return the contents of a text file. Supports both absolute and relative paths. Relative paths are resolved to the current working directory. Use this to examine code, configuration files, logs, or any text-based files.",
     parameters={
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "The absolute file path to read from (e.g., 'C:\\Users\\user\\file.txt' or '/home/user/file.txt')"
+                "description": "File path to read from. Can be absolute (e.g., 'C:\\Users\\user\\file.txt') or relative (e.g., 'file.txt', './data/file.txt'). Relative paths are resolved to the current working directory."
             }
         },
         "required": ["path"]
@@ -281,12 +309,15 @@ def read_file(path: str) -> dict:
     Read and return the contents of a file.
 
     Args:
-        path: The file path to read from
+        path: The file path to read from (absolute or relative)
 
     Returns:
         Dict with path, lines (content), and optional error
     """
     try:
+        # Normalize path to absolute
+        path = _normalize_path(path)
+
         with open(path, "r", encoding="utf-8") as file:
             content = file.read()
         
@@ -306,13 +337,13 @@ def read_file(path: str) -> dict:
 
 @tool(
     name="write_file",
-    description="Create or overwrite a file with the supplied content. Safeguards prevent writing to system directories. Use this to create new files or update existing ones.",
+    description="Create or overwrite a file with the supplied content. Supports both absolute and relative paths. Relative paths are resolved to the current working directory. Safeguards prevent writing to system directories. Use this to create new files or update existing ones.",
     parameters={
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "The absolute file path to write to (e.g., 'C:\\Users\\user\\output.txt' or '/home/user/output.txt')"
+                "description": "File path to write to. Can be absolute (e.g., 'C:\\Users\\user\\output.txt') or relative (e.g., 'output.txt', './data/output.txt'). Relative paths are resolved to the current working directory."
             },
             "lines": {
                 "type": "string",
@@ -328,11 +359,11 @@ def write_file(path: str, lines: str) -> dict:
     Write content to a file at the specified path.
 
     Args:
-        path: The absolute path of the file to write to
+        path: The file path to write to (absolute or relative)
         lines: The content to write (string or list of strings)
 
     Safeguards:
-        1. Path must be absolute
+        1. Relative paths are resolved to current working directory
         2. Parent directory must exist
         3. Cannot write to core system directories
 
@@ -340,14 +371,9 @@ def write_file(path: str, lines: str) -> dict:
         Dict with status and optional error
     """
     try:
-        # Ensure the path is absolute
-        if not os.path.isabs(path):
-            return {
-                "path": path,
-                "success": False,
-                "error": "Path must be absolute"
-            }
-        
+        # Normalize path to absolute
+        path = _normalize_path(path)
+
         # Extract the parent directory
         parent_dir = os.path.dirname(path)
         
@@ -387,13 +413,13 @@ def write_file(path: str, lines: str) -> dict:
 
 @tool(
     name="list_contents",
-    description="List all files and directories in a specified directory. Returns files with sizes and directories. Protected system directories cannot be listed.",
+    description="List all files and directories in a specified directory. Supports both absolute and relative paths. Returns files with sizes and directories. Protected system directories cannot be listed.",
     parameters={
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "The absolute directory path to list contents of (e.g., 'C:\\Users\\user\\Documents' or '/home/user/projects')"
+                "description": "Directory path to list contents of. Can be absolute or relative (e.g., 'C:\\Users\\user\\Documents', './data', or '.')"
             },
             "show_hidden": {
                 "type": "boolean",
@@ -409,7 +435,7 @@ def list_contents(path: str, show_hidden: bool = False) -> dict:
     List files and directories in the specified path.
 
     Args:
-        path: Directory path to list contents of
+        path: Directory path to list contents of (absolute or relative)
         show_hidden: Whether to show hidden files (default: False)
 
     Safeguards:
@@ -420,8 +446,8 @@ def list_contents(path: str, show_hidden: bool = False) -> dict:
         Dict with files, directories, and optional error
     """
     try:
-        # Normalize path
-        path = os.path.abspath(path)
+        # Normalize path to absolute
+        path = _normalize_path(path)
         
         # Check if path exists
         if not os.path.exists(path):
@@ -501,13 +527,13 @@ def _format_size(bytes: int) -> str:
 
 @tool(
     name="search_files",
-    description="Search for files matching a pattern within a directory. Supports wildcards like *.py, test*.txt. Useful for finding specific files.",
+    description="Search for files matching a pattern within a directory. Supports both absolute and relative paths. Supports wildcards like *.py, test*.txt. Useful for finding specific files.",
     parameters={
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "The directory path to search in"
+                "description": "Directory path to search in. Can be absolute or relative (e.g., 'C:\\projects', './src', or '.')"
             },
             "pattern": {
                 "type": "string",
@@ -531,7 +557,7 @@ def search_files(path: str, pattern: str, recursive: bool = True, max_results: i
     Search for files matching a pattern in the specified directory.
 
     Args:
-        path: Directory to search in
+        path: Directory to search in (absolute or relative)
         pattern: Filename pattern (supports wildcards like *.py, test*.txt)
         recursive: Search subdirectories (default: True)
         max_results: Maximum number of results to return (default: 100)
@@ -544,10 +570,10 @@ def search_files(path: str, pattern: str, recursive: bool = True, max_results: i
         Dict with matching files and their paths
     """
     import fnmatch
-    
+
     try:
-        # Normalize path
-        path = os.path.abspath(path)
+        # Normalize path to absolute
+        path = _normalize_path(path)
         
         # Check if path exists
         if not os.path.exists(path):
@@ -624,13 +650,13 @@ def search_files(path: str, pattern: str, recursive: bool = True, max_results: i
 
 @tool(
     name="get_file_info",
-    description="Get metadata about a file or directory without reading its contents. Returns size, modification date, type, etc.",
+    description="Get metadata about a file or directory without reading its contents. Supports both absolute and relative paths. Returns size, modification date, type, etc.",
     parameters={
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Path to the file or directory"
+                "description": "Path to the file or directory. Can be absolute or relative (e.g., 'file.txt', './data/file.txt')"
             }
         },
         "required": ["path"]
@@ -642,14 +668,14 @@ def get_file_info(path: str) -> dict:
     Get metadata about a file or directory without reading its contents.
 
     Args:
-        path: Path to the file or directory
+        path: Path to the file or directory (absolute or relative)
 
     Returns:
         Dict with size, modification time, type, permissions
     """
     try:
-        # Normalize path
-        path = os.path.abspath(path)
+        # Normalize path to absolute
+        path = _normalize_path(path)
         
         # Check if exists
         if not os.path.exists(path):
@@ -683,13 +709,13 @@ def get_file_info(path: str) -> dict:
 
 @tool(
     name="create_directory",
-    description="Create a new directory. Can create parent directories if needed. Cannot create in protected system locations.",
+    description="Create a new directory. Supports both absolute and relative paths. Can create parent directories if needed. Cannot create in protected system locations.",
     parameters={
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Absolute path for the new directory"
+                "description": "Directory path to create. Can be absolute or relative (e.g., 'C:\\data', './new_folder', 'output')"
             },
             "parents": {
                 "type": "boolean",
@@ -705,23 +731,19 @@ def create_directory(path: str, parents: bool = True) -> dict:
     Create a new directory.
 
     Args:
-        path: Directory path to create
+        path: Directory path to create (absolute or relative)
         parents: Create parent directories if needed (default: True)
 
     Safeguards:
         - Cannot create directories in protected system locations
-        - Path must be absolute
+        - Relative paths resolved to current working directory
 
     Returns:
         Dict with success status
     """
     try:
-        # Ensure absolute path
-        if not os.path.isabs(path):
-            return {"path": path, "success": False, "error": "Path must be absolute"}
-        
-        # Normalize path
-        path = os.path.abspath(path)
+        # Normalize path to absolute
+        path = _normalize_path(path)
         
         # Check if already exists
         if os.path.exists(path):
@@ -750,17 +772,17 @@ def create_directory(path: str, parents: bool = True) -> dict:
 
 @tool(
     name="move_file",
-    description="Move or rename a file or directory. Can be used to reorganize files or rename them.",
+    description="Move or rename a file or directory. Supports both absolute and relative paths. Can be used to reorganize files or rename them.",
     parameters={
         "type": "object",
         "properties": {
             "source": {
                 "type": "string",
-                "description": "Source path (absolute)"
+                "description": "Source path. Can be absolute or relative (e.g., 'old.txt', './data/file.txt')"
             },
             "destination": {
                 "type": "string",
-                "description": "Destination path (absolute)"
+                "description": "Destination path. Can be absolute or relative (e.g., 'new.txt', './backup/file.txt')"
             },
             "overwrite": {
                 "type": "boolean",
@@ -776,28 +798,24 @@ def move_file(source: str, destination: str, overwrite: bool = False) -> dict:
     Move or rename a file or directory.
 
     Args:
-        source: Source path
-        destination: Destination path
+        source: Source path (absolute or relative)
+        destination: Destination path (absolute or relative)
         overwrite: Whether to overwrite if destination exists (default: False)
 
     Safeguards:
         - Cannot move from/to protected system directories
-        - Paths must be absolute
+        - Relative paths resolved to current working directory
         - Won't overwrite unless explicitly allowed
 
     Returns:
         Dict with success status
     """
     import shutil
-    
+
     try:
-        # Ensure absolute paths
-        if not os.path.isabs(source) or not os.path.isabs(destination):
-            return {"source": source, "destination": destination, "success": False, "error": "Paths must be absolute"}
-        
-        # Normalize paths
-        source = os.path.abspath(source)
-        destination = os.path.abspath(destination)
+        # Normalize paths to absolute
+        source = _normalize_path(source)
+        destination = _normalize_path(destination)
         
         # Check if source exists
         if not os.path.exists(source):
@@ -835,13 +853,13 @@ def move_file(source: str, destination: str, overwrite: bool = False) -> dict:
 
 @tool(
     name="delete_file",
-    description="Delete a file or directory. Requires recursive=true for directories. Cannot delete protected system files.",
+    description="Delete a file or directory. Supports both absolute and relative paths. Requires recursive=true for directories. Cannot delete protected system files.",
     parameters={
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Absolute path to delete"
+                "description": "Path to delete. Can be absolute or relative (e.g., 'file.txt', './temp/data.json')"
             },
             "recursive": {
                 "type": "boolean",
@@ -857,26 +875,22 @@ def delete_file(path: str, recursive: bool = False) -> dict:
     Delete a file or directory.
 
     Args:
-        path: Path to delete
+        path: Path to delete (absolute or relative)
         recursive: If True, delete directories and their contents (default: False)
 
     Safeguards:
         - Cannot delete protected system directories or files
-        - Path must be absolute
+        - Relative paths resolved to current working directory
         - Requires explicit recursive=True for directories
 
     Returns:
         Dict with success status
     """
     import shutil
-    
+
     try:
-        # Ensure absolute path
-        if not os.path.isabs(path):
-            return {"path": path, "success": False, "error": "Path must be absolute"}
-        
-        # Normalize path
-        path = os.path.abspath(path)
+        # Normalize path to absolute
+        path = _normalize_path(path)
         
         # Check if exists
         if not os.path.exists(path):
@@ -906,17 +920,17 @@ def delete_file(path: str, recursive: bool = False) -> dict:
 
 @tool(
     name="copy_file",
-    description="Copy a file or directory to a new location. Creates a duplicate.",
+    description="Copy a file or directory to a new location. Supports both absolute and relative paths. Creates a duplicate.",
     parameters={
         "type": "object",
         "properties": {
             "source": {
                 "type": "string",
-                "description": "Source path (absolute)"
+                "description": "Source path. Can be absolute or relative (e.g., 'file.txt', './data/file.txt')"
             },
             "destination": {
                 "type": "string",
-                "description": "Destination path (absolute)"
+                "description": "Destination path. Can be absolute or relative (e.g., 'backup.txt', './backup/file.txt')"
             },
             "overwrite": {
                 "type": "boolean",
@@ -932,27 +946,23 @@ def copy_file(source: str, destination: str, overwrite: bool = False) -> dict:
     Copy a file or directory.
 
     Args:
-        source: Source path
-        destination: Destination path
+        source: Source path (absolute or relative)
+        destination: Destination path (absolute or relative)
         overwrite: Whether to overwrite if destination exists (default: False)
 
     Safeguards:
         - Cannot copy from/to protected system directories
-        - Paths must be absolute
+        - Relative paths resolved to current working directory
 
     Returns:
         Dict with success status
     """
     import shutil
-    
+
     try:
-        # Ensure absolute paths
-        if not os.path.isabs(source) or not os.path.isabs(destination):
-            return {"source": source, "destination": destination, "success": False, "error": "Paths must be absolute"}
-        
-        # Normalize paths
-        source = os.path.abspath(source)
-        destination = os.path.abspath(destination)
+        # Normalize paths to absolute
+        source = _normalize_path(source)
+        destination = _normalize_path(destination)
         
         # Check if source exists
         if not os.path.exists(source):
@@ -1011,13 +1021,13 @@ def get_current_directory() -> dict:
 
 @tool(
     name="calculate_directory_size",
-    description="Calculate the total size of a directory and count files/subdirectories. Useful for checking disk usage.",
+    description="Calculate the total size of a directory and count files/subdirectories. Supports both absolute and relative paths. Useful for checking disk usage.",
     parameters={
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Directory path to analyze"
+                "description": "Directory path to analyze. Can be absolute or relative (e.g., 'C:\\projects', './data', or '.')"
             },
             "max_depth": {
                 "type": "integer",
@@ -1033,7 +1043,7 @@ def calculate_directory_size(path: str, max_depth: int = None) -> dict:
     Calculate total size of a directory and its contents.
 
     Args:
-        path: Directory path
+        path: Directory path (absolute or relative)
         max_depth: Maximum depth to traverse (None = unlimited)
 
     Safeguards:
@@ -1044,8 +1054,8 @@ def calculate_directory_size(path: str, max_depth: int = None) -> dict:
         Dict with total size and file count
     """
     try:
-        # Normalize path
-        path = os.path.abspath(path)
+        # Normalize path to absolute
+        path = _normalize_path(path)
         
         # Check if exists
         if not os.path.exists(path):
@@ -1105,13 +1115,13 @@ def calculate_directory_size(path: str, max_depth: int = None) -> dict:
 
 @tool(
     name="find_in_files",
-    description="Search for text within files (grep-like). Useful for finding code, configuration values, or text across multiple files.",
+    description="Search for text within files (grep-like). Supports both absolute and relative paths. Useful for finding code, configuration values, or text across multiple files.",
     parameters={
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Directory to search in"
+                "description": "Directory to search in. Can be absolute or relative (e.g., 'C:\\projects', './src', or '.')"
             },
             "search_text": {
                 "type": "string",
@@ -1139,7 +1149,7 @@ def find_in_files(path: str, search_text: str, file_pattern: str = "*", case_sen
     Search for text within files (like grep).
 
     Args:
-        path: Directory to search in
+        path: Directory to search in (absolute or relative)
         search_text: Text to search for
         file_pattern: File pattern to search within (default: all files)
         case_sensitive: Whether search is case-sensitive (default: False)
@@ -1154,10 +1164,10 @@ def find_in_files(path: str, search_text: str, file_pattern: str = "*", case_sen
         Dict with matching files and line numbers
     """
     import fnmatch
-    
+
     try:
-        # Normalize path
-        path = os.path.abspath(path)
+        # Normalize path to absolute
+        path = _normalize_path(path)
         
         # Check if exists and is directory
         if not os.path.exists(path):
@@ -1227,3 +1237,396 @@ def find_in_files(path: str, search_text: str, file_pattern: str = "*", case_sen
 
     except Exception as e:
         return {"path": path, "search_text": search_text, "error": str(e)}
+
+# =============================================================================
+# WEB TOOLS - SECURITY UTILITIES
+# =============================================================================
+
+def sanitize_web_content(text: str, aggressive: bool = True) -> str:
+    """
+    Sanitize web content to prevent prompt injection attacks.
+
+    This function removes or neutralizes patterns that could be used to
+    manipulate the LLM through malicious web content.
+
+    Args:
+        text: Raw text extracted from webpage
+        aggressive: If True, apply stricter filtering (default: True)
+
+    Returns:
+        Sanitized text safe for LLM consumption
+
+    Security measures:
+    - Removes role-like prefixes (USER:, ASSISTANT:, SYSTEM:, etc.)
+    - Filters instruction-like patterns
+    - Removes excessive whitespace/newlines
+    - Neutralizes common prompt injection attempts
+    - Removes suspicious Unicode characters
+    """
+    import re
+
+    if not text:
+        return text
+
+    # 1. Remove common role prefixes that could confuse the LLM
+    # Matches patterns like "USER:", "ASSISTANT:", "SYSTEM:", "Human:", "AI:", etc.
+    role_patterns = [
+        r'^\s*(USER|HUMAN|PERSON):\s*',
+        r'^\s*(ASSISTANT|AI|BOT|CLAUDE|GPT):\s*',
+        r'^\s*(SYSTEM|INSTRUCTION|ADMIN|ROOT):\s*',
+        r'\n\s*(USER|HUMAN|PERSON):\s*',
+        r'\n\s*(ASSISTANT|AI|BOT|CLAUDE|GPT):\s*',
+        r'\n\s*(SYSTEM|INSTRUCTION|ADMIN|ROOT):\s*',
+    ]
+
+    for pattern in role_patterns:
+        text = re.sub(pattern, '\n', text, flags=re.IGNORECASE | re.MULTILINE)
+
+    # 2. Remove instruction-like patterns
+    if aggressive:
+        # Patterns that look like system instructions
+        instruction_patterns = [
+            r'\[INST(?:RUCTION)?\].*?\[/INST(?:RUCTION)?\]',  # [INSTRUCTION] tags
+            r'<\|.*?\|>',  # Special tokens like <|im_start|>
+            r'<<SYS>>.*?<</SYS>>',  # Llama-style system tags
+            r'\[SYSTEM\].*?\[/SYSTEM\]',  # System message tags
+            r'```(?:system|instruction|prompt).*?```',  # Code blocks with suspicious labels
+        ]
+
+        for pattern in instruction_patterns:
+            text = re.sub(pattern, '', text, flags=re.IGNORECASE | re.DOTALL)
+
+    # 3. Remove attempts to break out of context
+    breakout_patterns = [
+        r'Ignore (?:all )?previous (?:instructions|commands|prompts)',
+        r'Disregard (?:all )?(?:above|previous|prior)',
+        r'Forget (?:all )?(?:previous|prior) (?:instructions|commands)',
+        r'New (?:instruction|command|directive|task):',
+        r'Override (?:previous )?(?:instructions|settings)',
+        r'IMPORTANT:.*?(?:you must|you should|execute|run)',
+    ]
+
+    for pattern in breakout_patterns:
+        text = re.sub(pattern, '[filtered content]', text, flags=re.IGNORECASE)
+
+    # 4. Normalize whitespace (prevents hidden instructions via Unicode spaces)
+    # Replace various Unicode whitespace with regular space
+    text = re.sub(r'[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000\uFEFF]+', ' ', text)
+
+    # 5. Remove excessive newlines (could be used to create fake chat transcripts)
+    text = re.sub(r'\n{4,}', '\n\n\n', text)  # Max 3 consecutive newlines
+
+    # 6. Remove zero-width characters (could hide instructions)
+    zero_width_chars = [
+        '\u200B',  # Zero-width space
+        '\u200C',  # Zero-width non-joiner
+        '\u200D',  # Zero-width joiner
+        '\u2060',  # Word joiner
+        '\uFEFF',  # Zero-width no-break space
+    ]
+    for char in zero_width_chars:
+        text = text.replace(char, '')
+
+    # 7. Limit excessive repetition (could be used for token exhaustion attacks)
+    # Replace 10+ repeated characters with just 3
+    text = re.sub(r'(.)\1{9,}', r'\1\1\1', text)
+
+    # 8. Remove content that looks like prompt delimiters
+    delimiter_patterns = [
+        r'={10,}',  # Long sequences of equals signs
+        r'-{10,}',  # Long sequences of dashes
+        r'#{5,}',   # Multiple hash symbols
+    ]
+
+    for pattern in delimiter_patterns:
+        text = re.sub(pattern, '---', text)
+
+    return text.strip()
+
+
+# =============================================================================
+# WEB TOOLS
+# =============================================================================
+
+@tool(
+    name="web_search",
+    description="Search the web for current information using DuckDuckGo. Use this when you need up-to-date information, facts, news, or answers that are beyond your knowledge cutoff. Returns titles, snippets, and URLs.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "The search query (e.g., 'Python 3.12 new features', 'current weather NYC', 'latest AI news')"
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Maximum number of search results to return (default: 5, max: 10)"
+            }
+        },
+        "required": ["query"]
+    },
+    key_param="query"
+)
+def web_search(query: str, max_results: int = 5) -> dict:
+    """
+    Search the web using DuckDuckGo.
+
+    Args:
+        query: Search query string
+        max_results: Maximum number of results (default: 5, max: 10)
+
+    Returns:
+        Dict with search results containing title, snippet, and URL
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    try:
+        # Try new package name first (ddgs), fall back to old (duckduckgo-search)
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            from duckduckgo_search import DDGS
+        import server_config as config
+
+        logger.info(f"Web search initiated: query='{query}', max_results={max_results}")
+
+        # Limit max_results to prevent overwhelming context
+        max_results = min(max_results, 10)
+
+        # Perform search with timeout
+        results = []
+        try:
+            # Create DDGS instance with timeout
+            ddgs = DDGS(timeout=20)
+
+            # Get search results (returns a generator/list depending on version)
+            search_results = ddgs.text(query, max_results=max_results)
+
+            logger.debug(f"Search results type: {type(search_results)}")
+
+            # Handle both generator and list returns
+            if search_results is None:
+                logger.warning("DDGS returned None")
+                return {
+                    "query": query,
+                    "results": [],
+                    "count": 0,
+                    "success": False,
+                    "error": "DuckDuckGo returned no results. Try a different query or wait a moment."
+                }
+
+            # Iterate through results
+            for idx, result in enumerate(search_results):
+                if idx >= max_results:
+                    break
+
+                logger.debug(f"Result {idx}: {result}")
+
+                title = result.get("title", "")
+                snippet = result.get("body", "")
+                url = result.get("href", "")
+
+                if not url:  # Skip results without URLs
+                    logger.warning(f"Skipping result {idx} - no URL")
+                    continue
+
+                # Sanitize title and snippet to prevent prompt injection
+                if config.WEB_CONTENT_SANITIZATION:
+                    aggressive = config.WEB_CONTENT_AGGRESSIVE_SANITIZATION
+                    title = sanitize_web_content(title, aggressive=aggressive)
+                    snippet = sanitize_web_content(snippet, aggressive=aggressive)
+
+                results.append({
+                    "title": title,
+                    "snippet": snippet,
+                    "url": url,
+                })
+
+            logger.info(f"Found {len(results)} results for query: '{query}'")
+
+        except Exception as search_error:
+            logger.error(f"DDGS search error: {type(search_error).__name__}: {search_error}", exc_info=True)
+            return {
+                "query": query,
+                "results": [],
+                "count": 0,
+                "success": False,
+                "error": f"Search API error: {type(search_error).__name__}: {str(search_error)}"
+            }
+
+        # Check if we got any results
+        if not results:
+            logger.warning(f"No results found for query: '{query}'")
+            return {
+                "query": query,
+                "results": [],
+                "count": 0,
+                "success": False,
+                "error": "No results found. Try rephrasing your query or check internet connectivity."
+            }
+
+        # Wrap results in clear delimiters for LLM safety
+        formatted_results = []
+        for i, result in enumerate(results, 1):
+            formatted_results.append({
+                "title": result["title"],
+                "snippet": f"<web_search_result>\n{result['snippet']}\n</web_search_result>",
+                "url": result["url"]
+            })
+
+        return {
+            "query": query,
+            "results": formatted_results,
+            "count": len(formatted_results),
+            "success": True,
+            "security_note": "Content has been sanitized to prevent prompt injection attacks" if config.WEB_CONTENT_SANITIZATION else None
+        }
+
+    except ImportError as e:
+        logger.error(f"Import error: {e}")
+        return {
+            "query": query,
+            "results": [],
+            "count": 0,
+            "success": False,
+            "error": "ddgs library not installed. Install with: pip install ddgs (or pip install duckduckgo-search for older version)"
+        }
+    except Exception as e:
+        logger.error(f"Unexpected error in web_search: {type(e).__name__}: {e}", exc_info=True)
+        return {
+            "query": query,
+            "results": [],
+            "count": 0,
+            "success": False,
+            "error": f"Search failed: {type(e).__name__}: {str(e)}"
+        }
+
+@tool(
+    name="read_webpage",
+    description="Fetch and extract the main text content from a webpage URL. Use this to read articles, documentation, or any web content. Returns clean text without HTML markup.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "The full URL to fetch (must start with http:// or https://)"
+            },
+            "max_chars": {
+                "type": "integer",
+                "description": "Maximum characters to return (default: 3000, helps with context limits)"
+            }
+        },
+        "required": ["url"]
+    },
+    key_param="url"
+)
+def read_webpage(url: str, max_chars: int = 3000) -> dict:
+    """
+    Fetch and extract text content from a webpage.
+
+    Args:
+        url: URL to fetch
+        max_chars: Maximum characters to return (default: 3000)
+
+    Returns:
+        Dict with webpage content and metadata
+    """
+    try:
+        import requests
+        from bs4 import BeautifulSoup
+        import server_config as config
+
+        # Validate URL
+        if not url.startswith(('http://', 'https://')):
+            return {
+                "url": url,
+                "content": "",
+                "success": False,
+                "error": "URL must start with http:// or https://"
+            }
+
+        # Fetch webpage
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+
+        # Parse HTML
+        soup = BeautifulSoup(response.content, 'lxml')
+
+        # Remove script and style elements
+        for script in soup(["script", "style", "nav", "footer", "header"]):
+            script.decompose()
+
+        # Get text
+        text = soup.get_text(separator='\n', strip=True)
+
+        # Clean up whitespace
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        clean_text = '\n'.join(lines)
+
+        # Sanitize content BEFORE truncation to prevent injection in truncated content
+        if config.WEB_CONTENT_SANITIZATION:
+            aggressive = config.WEB_CONTENT_AGGRESSIVE_SANITIZATION
+            clean_text = sanitize_web_content(clean_text, aggressive=aggressive)
+
+        # Truncate if needed (after sanitization to get accurate length)
+        was_truncated = False
+        if len(clean_text) > max_chars:
+            clean_text = clean_text[:max_chars]
+            was_truncated = True
+
+        # Get title and sanitize it too
+        title = soup.title.string if soup.title else "No title"
+        if config.WEB_CONTENT_SANITIZATION:
+            title = sanitize_web_content(title, aggressive=aggressive)
+
+        # Wrap content in clear delimiters to help LLM understand it's external content
+        wrapped_content = f"""<webpage_content source="{url}">
+{clean_text}
+</webpage_content>"""
+
+        if was_truncated:
+            wrapped_content += f"\n\n[Content truncated at {max_chars} characters for token limit]"
+
+        return {
+            "url": url,
+            "title": title,
+            "content": wrapped_content,
+            "length": len(clean_text),
+            "truncated": was_truncated,
+            "success": True,
+            "security_note": "Content has been sanitized to prevent prompt injection attacks" if config.WEB_CONTENT_SANITIZATION else None
+        }
+
+    except requests.exceptions.Timeout:
+        return {
+            "url": url,
+            "content": "",
+            "success": False,
+            "error": "Request timed out after 10 seconds"
+        }
+    except requests.exceptions.RequestException as e:
+        return {
+            "url": url,
+            "content": "",
+            "success": False,
+            "error": f"Failed to fetch URL: {str(e)}"
+        }
+    except ImportError as e:
+        missing_lib = "requests" if "requests" in str(e) else "beautifulsoup4"
+        return {
+            "url": url,
+            "content": "",
+            "success": False,
+            "error": f"{missing_lib} library not installed. Install with: pip install {missing_lib}"
+        }
+    except Exception as e:
+        return {
+            "url": url,
+            "content": "",
+            "success": False,
+            "error": f"Error reading webpage: {str(e)}"
+        }

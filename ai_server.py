@@ -6,7 +6,7 @@ FastAPI server that manages llama-server and provides chat interface
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
-from typing import List, Dict, Optional, Any, AsyncGenerator
+from typing import List, Dict, Optional, Any, AsyncGenerator, Union
 import logging
 import sys
 import signal
@@ -55,6 +55,11 @@ class ServerState:
         self.is_generating: bool = False
         self.tools_enabled: bool = config.ENABLE_TOOLS
         self.shutdown_requested: bool = False
+
+        # Approval system state
+        self.pending_tool_calls: List[Dict] = []  # Tool calls awaiting approval
+        self.pending_messages: List[Dict] = []  # Message history when approval was requested
+        self.pending_generation_params: Dict = {}  # Temperature, max_tokens, etc. for continuation
 
 state = ServerState()
 
@@ -135,6 +140,27 @@ class HardwareInfoResponse(BaseModel):
     profile: Dict[str, Any]
     current_config: Dict[str, Any]
     device_string: str
+
+class ToolApprovalRequest(BaseModel):
+    """Model for tool approval requests"""
+    tool_name: str
+    arguments: Dict[str, Any]
+    tool_call_id: str
+
+class ApprovalRequiredResponse(BaseModel):
+    """Response when tools require user approval"""
+    approval_required: bool = True
+    tools_pending: List[ToolApprovalRequest]
+    message: str
+
+class ToolApprovalDecision(BaseModel):
+    """User's decision on a specific tool call"""
+    tool_call_id: str
+    approved: bool
+
+class ChatApprovalRequest(BaseModel):
+    """Request to approve/deny pending tool calls"""
+    decisions: List[ToolApprovalDecision]
 
 # ============================================================================
 # Helper Functions & Decorators
@@ -346,6 +372,11 @@ async def startup_event():
     # Initialize llama manager
     state.llama_manager = LlamaServerManager(config.LLAMA_SERVER_CONFIG)
 
+    # Set system prompt for default model
+    state.system_prompt = config.get_system_prompt_for_model(config.DEFAULT_MODEL_KEY)
+    if state.system_prompt != config.DEFAULT_SYSTEM_PROMPT:
+        logger.info(f"Using model-specific system prompt for {config.DEFAULT_MODEL_KEY}")
+
     # Auto-start if configured
     if config.LLAMA_SERVER_CONFIG.get('auto_start', True):
         logger.info(f"Auto-starting llama-server with model: {config.DEFAULT_MODEL_KEY}")
@@ -487,6 +518,11 @@ async def switch_model(request: ModelSwitchRequest):
             state.current_model_key = request.model_key
             state.conversation_history = []
 
+            # Update system prompt for new model
+            state.system_prompt = config.get_system_prompt_for_model(request.model_key)
+            if state.system_prompt != config.DEFAULT_SYSTEM_PROMPT:
+                logger.info(f"Using model-specific system prompt for {request.model_key}")
+
             logger.info(f"✓ Switched to {request.model_key}")
 
             return ModelSwitchResponse(
@@ -504,7 +540,7 @@ async def switch_model(request: ModelSwitchRequest):
         logger.error(f"Error switching model: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/chat", response_model=ChatResponse)
+@app.post("/chat", response_model=Union[ChatResponse, ApprovalRequiredResponse])
 @require_llama_server
 @require_not_generating
 async def chat(request: ChatRequest):
@@ -579,20 +615,63 @@ async def chat(request: ChatRequest):
             
             # Check for tool calls
             tool_calls = message.get("tool_calls", [])
-            
+
             if not tool_calls or not tools_enabled:
                 # No tool calls - this is the final response
                 response_text = message.get("content", "")
-                
+
                 # Update conversation history
                 state.conversation_history.append({
                     "role": "assistant",
                     "content": response_text
                 })
-                
+
                 break
-            
-            # We have tool calls - execute them
+
+            # We have tool calls - check if any require approval
+            if config.TOOL_APPROVAL_MODE:
+                tools_needing_approval = []
+                for tool_call in tool_calls:
+                    function_name = tool_call["function"]["name"]
+                    if function_name in config.TOOLS_REQUIRING_APPROVAL:
+                        arguments = json.loads(tool_call["function"]["arguments"])
+                        tools_needing_approval.append(
+                            ToolApprovalRequest(
+                                tool_name=function_name,
+                                arguments=arguments,
+                                tool_call_id=tool_call["id"]
+                            )
+                        )
+
+                # If any tools need approval, pause and request user confirmation
+                if tools_needing_approval:
+                    logger.info(f"{len(tools_needing_approval)} tool(s) require approval - pausing execution")
+
+                    # Save state for resumption after approval
+                    state.pending_tool_calls = tool_calls
+                    state.pending_messages = messages.copy()
+                    state.pending_generation_params = {
+                        "temperature": request.temperature,
+                        "max_tokens": request.max_tokens,
+                        "top_p": request.top_p,
+                        "top_k": request.top_k,
+                        "repeat_penalty": request.repeat_penalty,
+                        "tools_enabled": tools_enabled,
+                        "iterations": iterations,
+                        "total_tokens_in": total_tokens_in,
+                        "total_tokens_out": total_tokens_out,
+                        "tools_used": tools_used.copy(),
+                        "formatted_tools": formatted_tools if tools_enabled else None
+                    }
+
+                    # Return approval request to client
+                    state.is_generating = False
+                    return ApprovalRequiredResponse(
+                        tools_pending=tools_needing_approval,
+                        message=f"The AI wants to use {len(tools_needing_approval)} tool(s) that require your approval."
+                    )
+
+            # Execute tool calls (either no approval needed, or approval mode disabled)
             logger.info(f"Executing {len(tool_calls)} tool call(s)")
             
             # Add the assistant's message with tool calls to the conversation
@@ -664,6 +743,229 @@ async def chat(request: ChatRequest):
         raise
     except Exception as e:
         logger.error(f"Error in chat endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        state.is_generating = False
+
+
+@app.post("/chat/approve", response_model=ChatResponse)
+@require_llama_server
+@require_not_generating
+async def approve_tools(approval_request: ChatApprovalRequest):
+    """
+    Handle approval/denial of pending tool calls and continue generation.
+
+    This endpoint is called after the client receives an ApprovalRequiredResponse
+    and the user has made decisions on which tools to approve.
+    """
+    if state.shutdown_requested:
+        raise HTTPException(status_code=503, detail="Server shutting down")
+
+    if not state.pending_tool_calls:
+        raise HTTPException(status_code=400, detail="No pending tool calls to approve")
+
+    try:
+        state.is_generating = True
+        import time
+        start_time = time.time()
+
+        # Restore saved state
+        messages = state.pending_messages.copy()
+        tool_calls = state.pending_tool_calls.copy()
+        params = state.pending_generation_params
+
+        iterations = params.get("iterations", 1)
+        max_iterations = config.MAX_TOOL_ITERATIONS
+        total_tokens_in = params.get("total_tokens_in", 0)
+        total_tokens_out = params.get("total_tokens_out", 0)
+        tools_used = params.get("tools_used", [])
+        formatted_tools = params.get("formatted_tools")
+
+        # Create approval lookup
+        approvals = {d.tool_call_id: d.approved for d in approval_request.decisions}
+
+        # Add the assistant's message with tool calls to the conversation
+        messages.append({
+            "role": "assistant",
+            "content": "",
+            "tool_calls": tool_calls
+        })
+
+        # Execute approved tool calls, skip denied ones
+        for tool_call in tool_calls:
+            function_name = tool_call["function"]["name"]
+            arguments = json.loads(tool_call["function"]["arguments"])
+            tool_call_id = tool_call["id"]
+
+            # Check if this tool was approved
+            if tool_call_id in approvals and not approvals[tool_call_id]:
+                logger.info(f"Tool call DENIED by user: {function_name}({arguments})")
+                result = {
+                    "error": "Tool execution denied by user",
+                    "approved": False
+                }
+            else:
+                logger.info(f"Tool call APPROVED: {function_name}({arguments})")
+
+                # Execute the tool
+                try:
+                    result = tools.execute_tool(function_name, arguments)
+
+                    # Build logging string for tools_used
+                    key_param = tools.get_tool_key_param(function_name)
+                    if key_param and key_param in arguments:
+                        if function_name in ["move_file", "copy_file"] and "destination" in arguments:
+                            tools_used.append(f"{function_name}({arguments[key_param]}→{arguments['destination']})")
+                        else:
+                            tools_used.append(f"{function_name}({arguments[key_param]})")
+                    else:
+                        tools_used.append(function_name)
+
+                    logger.info(f"Tool result: {result}")
+
+                except Exception as e:
+                    result = {"error": str(e)}
+                    logger.error(f"Tool execution error: {e}")
+
+            # Add tool result to messages
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": json.dumps(result)
+            })
+
+        # Clear pending state
+        state.pending_tool_calls = []
+        state.pending_messages = []
+        state.pending_generation_params = {}
+
+        # Continue generation loop with tool results
+        while iterations < max_iterations:
+            iterations += 1
+            logger.info(f"Generation iteration {iterations}/{max_iterations} (post-approval)")
+
+            # Call llama-server with updated messages
+            llama_response = call_llama_server(
+                messages=messages,
+                temperature=params.get("temperature"),
+                max_tokens=params.get("max_tokens"),
+                top_p=params.get("top_p"),
+                top_k=params.get("top_k"),
+                repeat_penalty=params.get("repeat_penalty"),
+                tools=formatted_tools
+            )
+
+            # Extract response
+            choice = llama_response["choices"][0]
+            message = choice["message"]
+
+            # Track tokens
+            usage = llama_response.get("usage", {})
+            total_tokens_in += usage.get("prompt_tokens", 0)
+            total_tokens_out += usage.get("completion_tokens", 0)
+
+            # Check for more tool calls
+            tool_calls = message.get("tool_calls", [])
+
+            if not tool_calls:
+                # Final response
+                response_text = message.get("content", "")
+                state.conversation_history.append({
+                    "role": "assistant",
+                    "content": response_text
+                })
+                break
+
+            # More tool calls - check for approval again
+            if config.TOOL_APPROVAL_MODE:
+                tools_needing_approval = []
+                for tool_call in tool_calls:
+                    function_name = tool_call["function"]["name"]
+                    if function_name in config.TOOLS_REQUIRING_APPROVAL:
+                        arguments = json.loads(tool_call["function"]["arguments"])
+                        tools_needing_approval.append(
+                            ToolApprovalRequest(
+                                tool_name=function_name,
+                                arguments=arguments,
+                                tool_call_id=tool_call["id"]
+                            )
+                        )
+
+                if tools_needing_approval:
+                    logger.info(f"{len(tools_needing_approval)} more tool(s) require approval")
+
+                    # Save state again
+                    state.pending_tool_calls = tool_calls
+                    state.pending_messages = messages.copy()
+                    state.pending_generation_params = {
+                        "temperature": params.get("temperature"),
+                        "max_tokens": params.get("max_tokens"),
+                        "top_p": params.get("top_p"),
+                        "top_k": params.get("top_k"),
+                        "repeat_penalty": params.get("repeat_penalty"),
+                        "tools_enabled": True,
+                        "iterations": iterations,
+                        "total_tokens_in": total_tokens_in,
+                        "total_tokens_out": total_tokens_out,
+                        "tools_used": tools_used.copy(),
+                        "formatted_tools": formatted_tools
+                    }
+
+                    state.is_generating = False
+                    return ApprovalRequiredResponse(
+                        tools_pending=tools_needing_approval,
+                        message=f"The AI wants to use {len(tools_needing_approval)} more tool(s)."
+                    )
+
+            # Execute non-approval-required tools
+            messages.append({
+                "role": "assistant",
+                "content": message.get("content", ""),
+                "tool_calls": tool_calls
+            })
+
+            for tool_call in tool_calls:
+                function_name = tool_call["function"]["name"]
+                arguments = json.loads(tool_call["function"]["arguments"])
+                tool_call_id = tool_call["id"]
+
+                try:
+                    result = tools.execute_tool(function_name, arguments)
+                    key_param = tools.get_tool_key_param(function_name)
+                    if key_param and key_param in arguments:
+                        tools_used.append(f"{function_name}({arguments[key_param]})")
+                    else:
+                        tools_used.append(function_name)
+                except Exception as e:
+                    result = {"error": str(e)}
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": json.dumps(result)
+                })
+
+        # Calculate final stats
+        total_time = time.time() - start_time
+        tokens_per_second = total_tokens_out / total_time if total_time > 0 else 0
+
+        logger.info(f"Generation complete (post-approval): {total_tokens_out} tokens in {total_time:.2f}s")
+
+        return ChatResponse(
+            response=response_text,
+            tokens_input=total_tokens_in,
+            tokens_generated=total_tokens_out,
+            tokens_total=total_tokens_in + total_tokens_out,
+            generation_time=total_time,
+            tokens_per_second=tokens_per_second,
+            device=get_device_string(),
+            tools_used=tools_used if tools_used else None
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in approval endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         state.is_generating = False
@@ -871,10 +1173,13 @@ async def execute_command(request: CommandRequest):
                 current_value=state.system_prompt
             )
         elif request.value.lower() == "reset":
-            state.system_prompt = config.DEFAULT_SYSTEM_PROMPT
+            # Reset to model-specific prompt (or default if no override)
+            state.system_prompt = config.get_system_prompt_for_model(state.current_model_key)
+            is_custom = state.system_prompt != config.DEFAULT_SYSTEM_PROMPT
+            msg = f"System prompt reset to {'model-specific' if is_custom else 'default'}"
             return CommandResponse(
                 status="ok",
-                message="System prompt reset to default",
+                message=msg,
                 current_value=state.system_prompt
             )
         else:
