@@ -6,7 +6,7 @@ FastAPI server that manages llama-server and provides chat interface
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
-from typing import List, Dict, Optional, Any, AsyncGenerator
+from typing import List, Dict, Optional, Any, AsyncGenerator, Union
 import logging
 import sys
 import signal
@@ -540,7 +540,7 @@ async def switch_model(request: ModelSwitchRequest):
         logger.error(f"Error switching model: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/chat", response_model=ChatResponse)
+@app.post("/chat", response_model=Union[ChatResponse, ApprovalRequiredResponse])
 @require_llama_server
 @require_not_generating
 async def chat(request: ChatRequest):
