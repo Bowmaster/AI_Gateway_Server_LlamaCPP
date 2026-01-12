@@ -261,15 +261,43 @@ def _is_protected_path(path: str) -> bool:
     
     return False
 
+def _normalize_path(path: str) -> str:
+    """
+    Normalize and resolve a file path to an absolute path.
+
+    Features:
+    - Converts relative paths to absolute using current working directory
+    - Handles mixed path separators (/ and \\)
+    - Expands user home directory (~)
+    - Normalizes path for the current OS
+
+    Args:
+        path: Relative or absolute file path
+
+    Returns:
+        Absolute normalized path for current OS
+    """
+    # Expand user home directory if present (~)
+    path = os.path.expanduser(path)
+
+    # If path is already absolute, just normalize it
+    if os.path.isabs(path):
+        return os.path.normpath(path)
+
+    # Otherwise, resolve relative to current working directory
+    cwd = os.getcwd()
+    absolute_path = os.path.join(cwd, path)
+    return os.path.normpath(absolute_path)
+
 @tool(
     name="read_file",
-    description="Read and return the contents of a text file. Use this to examine code, configuration files, logs, or any text-based files.",
+    description="Read and return the contents of a text file. Supports both absolute and relative paths. Relative paths are resolved to the current working directory. Use this to examine code, configuration files, logs, or any text-based files.",
     parameters={
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "The absolute file path to read from (e.g., 'C:\\Users\\user\\file.txt' or '/home/user/file.txt')"
+                "description": "File path to read from. Can be absolute (e.g., 'C:\\Users\\user\\file.txt') or relative (e.g., 'file.txt', './data/file.txt'). Relative paths are resolved to the current working directory."
             }
         },
         "required": ["path"]
@@ -281,12 +309,15 @@ def read_file(path: str) -> dict:
     Read and return the contents of a file.
 
     Args:
-        path: The file path to read from
+        path: The file path to read from (absolute or relative)
 
     Returns:
         Dict with path, lines (content), and optional error
     """
     try:
+        # Normalize path to absolute
+        path = _normalize_path(path)
+
         with open(path, "r", encoding="utf-8") as file:
             content = file.read()
         
@@ -306,13 +337,13 @@ def read_file(path: str) -> dict:
 
 @tool(
     name="write_file",
-    description="Create or overwrite a file with the supplied content. Safeguards prevent writing to system directories. Use this to create new files or update existing ones.",
+    description="Create or overwrite a file with the supplied content. Supports both absolute and relative paths. Relative paths are resolved to the current working directory. Safeguards prevent writing to system directories. Use this to create new files or update existing ones.",
     parameters={
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "The absolute file path to write to (e.g., 'C:\\Users\\user\\output.txt' or '/home/user/output.txt')"
+                "description": "File path to write to. Can be absolute (e.g., 'C:\\Users\\user\\output.txt') or relative (e.g., 'output.txt', './data/output.txt'). Relative paths are resolved to the current working directory."
             },
             "lines": {
                 "type": "string",
@@ -328,11 +359,11 @@ def write_file(path: str, lines: str) -> dict:
     Write content to a file at the specified path.
 
     Args:
-        path: The absolute path of the file to write to
+        path: The file path to write to (absolute or relative)
         lines: The content to write (string or list of strings)
 
     Safeguards:
-        1. Path must be absolute
+        1. Relative paths are resolved to current working directory
         2. Parent directory must exist
         3. Cannot write to core system directories
 
@@ -340,14 +371,9 @@ def write_file(path: str, lines: str) -> dict:
         Dict with status and optional error
     """
     try:
-        # Ensure the path is absolute
-        if not os.path.isabs(path):
-            return {
-                "path": path,
-                "success": False,
-                "error": "Path must be absolute"
-            }
-        
+        # Normalize path to absolute
+        path = _normalize_path(path)
+
         # Extract the parent directory
         parent_dir = os.path.dirname(path)
         
@@ -387,13 +413,13 @@ def write_file(path: str, lines: str) -> dict:
 
 @tool(
     name="list_contents",
-    description="List all files and directories in a specified directory. Returns files with sizes and directories. Protected system directories cannot be listed.",
+    description="List all files and directories in a specified directory. Supports both absolute and relative paths. Returns files with sizes and directories. Protected system directories cannot be listed.",
     parameters={
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "The absolute directory path to list contents of (e.g., 'C:\\Users\\user\\Documents' or '/home/user/projects')"
+                "description": "Directory path to list contents of. Can be absolute or relative (e.g., 'C:\\Users\\user\\Documents', './data', or '.')"
             },
             "show_hidden": {
                 "type": "boolean",
@@ -409,7 +435,7 @@ def list_contents(path: str, show_hidden: bool = False) -> dict:
     List files and directories in the specified path.
 
     Args:
-        path: Directory path to list contents of
+        path: Directory path to list contents of (absolute or relative)
         show_hidden: Whether to show hidden files (default: False)
 
     Safeguards:
@@ -420,8 +446,8 @@ def list_contents(path: str, show_hidden: bool = False) -> dict:
         Dict with files, directories, and optional error
     """
     try:
-        # Normalize path
-        path = os.path.abspath(path)
+        # Normalize path to absolute
+        path = _normalize_path(path)
         
         # Check if path exists
         if not os.path.exists(path):
@@ -501,13 +527,13 @@ def _format_size(bytes: int) -> str:
 
 @tool(
     name="search_files",
-    description="Search for files matching a pattern within a directory. Supports wildcards like *.py, test*.txt. Useful for finding specific files.",
+    description="Search for files matching a pattern within a directory. Supports both absolute and relative paths. Supports wildcards like *.py, test*.txt. Useful for finding specific files.",
     parameters={
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "The directory path to search in"
+                "description": "Directory path to search in. Can be absolute or relative (e.g., 'C:\\projects', './src', or '.')"
             },
             "pattern": {
                 "type": "string",
@@ -531,7 +557,7 @@ def search_files(path: str, pattern: str, recursive: bool = True, max_results: i
     Search for files matching a pattern in the specified directory.
 
     Args:
-        path: Directory to search in
+        path: Directory to search in (absolute or relative)
         pattern: Filename pattern (supports wildcards like *.py, test*.txt)
         recursive: Search subdirectories (default: True)
         max_results: Maximum number of results to return (default: 100)
@@ -544,10 +570,10 @@ def search_files(path: str, pattern: str, recursive: bool = True, max_results: i
         Dict with matching files and their paths
     """
     import fnmatch
-    
+
     try:
-        # Normalize path
-        path = os.path.abspath(path)
+        # Normalize path to absolute
+        path = _normalize_path(path)
         
         # Check if path exists
         if not os.path.exists(path):
@@ -624,13 +650,13 @@ def search_files(path: str, pattern: str, recursive: bool = True, max_results: i
 
 @tool(
     name="get_file_info",
-    description="Get metadata about a file or directory without reading its contents. Returns size, modification date, type, etc.",
+    description="Get metadata about a file or directory without reading its contents. Supports both absolute and relative paths. Returns size, modification date, type, etc.",
     parameters={
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Path to the file or directory"
+                "description": "Path to the file or directory. Can be absolute or relative (e.g., 'file.txt', './data/file.txt')"
             }
         },
         "required": ["path"]
@@ -642,14 +668,14 @@ def get_file_info(path: str) -> dict:
     Get metadata about a file or directory without reading its contents.
 
     Args:
-        path: Path to the file or directory
+        path: Path to the file or directory (absolute or relative)
 
     Returns:
         Dict with size, modification time, type, permissions
     """
     try:
-        # Normalize path
-        path = os.path.abspath(path)
+        # Normalize path to absolute
+        path = _normalize_path(path)
         
         # Check if exists
         if not os.path.exists(path):
@@ -683,13 +709,13 @@ def get_file_info(path: str) -> dict:
 
 @tool(
     name="create_directory",
-    description="Create a new directory. Can create parent directories if needed. Cannot create in protected system locations.",
+    description="Create a new directory. Supports both absolute and relative paths. Can create parent directories if needed. Cannot create in protected system locations.",
     parameters={
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Absolute path for the new directory"
+                "description": "Directory path to create. Can be absolute or relative (e.g., 'C:\\data', './new_folder', 'output')"
             },
             "parents": {
                 "type": "boolean",
@@ -705,23 +731,19 @@ def create_directory(path: str, parents: bool = True) -> dict:
     Create a new directory.
 
     Args:
-        path: Directory path to create
+        path: Directory path to create (absolute or relative)
         parents: Create parent directories if needed (default: True)
 
     Safeguards:
         - Cannot create directories in protected system locations
-        - Path must be absolute
+        - Relative paths resolved to current working directory
 
     Returns:
         Dict with success status
     """
     try:
-        # Ensure absolute path
-        if not os.path.isabs(path):
-            return {"path": path, "success": False, "error": "Path must be absolute"}
-        
-        # Normalize path
-        path = os.path.abspath(path)
+        # Normalize path to absolute
+        path = _normalize_path(path)
         
         # Check if already exists
         if os.path.exists(path):
@@ -750,17 +772,17 @@ def create_directory(path: str, parents: bool = True) -> dict:
 
 @tool(
     name="move_file",
-    description="Move or rename a file or directory. Can be used to reorganize files or rename them.",
+    description="Move or rename a file or directory. Supports both absolute and relative paths. Can be used to reorganize files or rename them.",
     parameters={
         "type": "object",
         "properties": {
             "source": {
                 "type": "string",
-                "description": "Source path (absolute)"
+                "description": "Source path. Can be absolute or relative (e.g., 'old.txt', './data/file.txt')"
             },
             "destination": {
                 "type": "string",
-                "description": "Destination path (absolute)"
+                "description": "Destination path. Can be absolute or relative (e.g., 'new.txt', './backup/file.txt')"
             },
             "overwrite": {
                 "type": "boolean",
@@ -776,28 +798,24 @@ def move_file(source: str, destination: str, overwrite: bool = False) -> dict:
     Move or rename a file or directory.
 
     Args:
-        source: Source path
-        destination: Destination path
+        source: Source path (absolute or relative)
+        destination: Destination path (absolute or relative)
         overwrite: Whether to overwrite if destination exists (default: False)
 
     Safeguards:
         - Cannot move from/to protected system directories
-        - Paths must be absolute
+        - Relative paths resolved to current working directory
         - Won't overwrite unless explicitly allowed
 
     Returns:
         Dict with success status
     """
     import shutil
-    
+
     try:
-        # Ensure absolute paths
-        if not os.path.isabs(source) or not os.path.isabs(destination):
-            return {"source": source, "destination": destination, "success": False, "error": "Paths must be absolute"}
-        
-        # Normalize paths
-        source = os.path.abspath(source)
-        destination = os.path.abspath(destination)
+        # Normalize paths to absolute
+        source = _normalize_path(source)
+        destination = _normalize_path(destination)
         
         # Check if source exists
         if not os.path.exists(source):
@@ -835,13 +853,13 @@ def move_file(source: str, destination: str, overwrite: bool = False) -> dict:
 
 @tool(
     name="delete_file",
-    description="Delete a file or directory. Requires recursive=true for directories. Cannot delete protected system files.",
+    description="Delete a file or directory. Supports both absolute and relative paths. Requires recursive=true for directories. Cannot delete protected system files.",
     parameters={
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Absolute path to delete"
+                "description": "Path to delete. Can be absolute or relative (e.g., 'file.txt', './temp/data.json')"
             },
             "recursive": {
                 "type": "boolean",
@@ -857,26 +875,22 @@ def delete_file(path: str, recursive: bool = False) -> dict:
     Delete a file or directory.
 
     Args:
-        path: Path to delete
+        path: Path to delete (absolute or relative)
         recursive: If True, delete directories and their contents (default: False)
 
     Safeguards:
         - Cannot delete protected system directories or files
-        - Path must be absolute
+        - Relative paths resolved to current working directory
         - Requires explicit recursive=True for directories
 
     Returns:
         Dict with success status
     """
     import shutil
-    
+
     try:
-        # Ensure absolute path
-        if not os.path.isabs(path):
-            return {"path": path, "success": False, "error": "Path must be absolute"}
-        
-        # Normalize path
-        path = os.path.abspath(path)
+        # Normalize path to absolute
+        path = _normalize_path(path)
         
         # Check if exists
         if not os.path.exists(path):
@@ -906,17 +920,17 @@ def delete_file(path: str, recursive: bool = False) -> dict:
 
 @tool(
     name="copy_file",
-    description="Copy a file or directory to a new location. Creates a duplicate.",
+    description="Copy a file or directory to a new location. Supports both absolute and relative paths. Creates a duplicate.",
     parameters={
         "type": "object",
         "properties": {
             "source": {
                 "type": "string",
-                "description": "Source path (absolute)"
+                "description": "Source path. Can be absolute or relative (e.g., 'file.txt', './data/file.txt')"
             },
             "destination": {
                 "type": "string",
-                "description": "Destination path (absolute)"
+                "description": "Destination path. Can be absolute or relative (e.g., 'backup.txt', './backup/file.txt')"
             },
             "overwrite": {
                 "type": "boolean",
@@ -932,27 +946,23 @@ def copy_file(source: str, destination: str, overwrite: bool = False) -> dict:
     Copy a file or directory.
 
     Args:
-        source: Source path
-        destination: Destination path
+        source: Source path (absolute or relative)
+        destination: Destination path (absolute or relative)
         overwrite: Whether to overwrite if destination exists (default: False)
 
     Safeguards:
         - Cannot copy from/to protected system directories
-        - Paths must be absolute
+        - Relative paths resolved to current working directory
 
     Returns:
         Dict with success status
     """
     import shutil
-    
+
     try:
-        # Ensure absolute paths
-        if not os.path.isabs(source) or not os.path.isabs(destination):
-            return {"source": source, "destination": destination, "success": False, "error": "Paths must be absolute"}
-        
-        # Normalize paths
-        source = os.path.abspath(source)
-        destination = os.path.abspath(destination)
+        # Normalize paths to absolute
+        source = _normalize_path(source)
+        destination = _normalize_path(destination)
         
         # Check if source exists
         if not os.path.exists(source):
@@ -1011,13 +1021,13 @@ def get_current_directory() -> dict:
 
 @tool(
     name="calculate_directory_size",
-    description="Calculate the total size of a directory and count files/subdirectories. Useful for checking disk usage.",
+    description="Calculate the total size of a directory and count files/subdirectories. Supports both absolute and relative paths. Useful for checking disk usage.",
     parameters={
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Directory path to analyze"
+                "description": "Directory path to analyze. Can be absolute or relative (e.g., 'C:\\projects', './data', or '.')"
             },
             "max_depth": {
                 "type": "integer",
@@ -1033,7 +1043,7 @@ def calculate_directory_size(path: str, max_depth: int = None) -> dict:
     Calculate total size of a directory and its contents.
 
     Args:
-        path: Directory path
+        path: Directory path (absolute or relative)
         max_depth: Maximum depth to traverse (None = unlimited)
 
     Safeguards:
@@ -1044,8 +1054,8 @@ def calculate_directory_size(path: str, max_depth: int = None) -> dict:
         Dict with total size and file count
     """
     try:
-        # Normalize path
-        path = os.path.abspath(path)
+        # Normalize path to absolute
+        path = _normalize_path(path)
         
         # Check if exists
         if not os.path.exists(path):
@@ -1105,13 +1115,13 @@ def calculate_directory_size(path: str, max_depth: int = None) -> dict:
 
 @tool(
     name="find_in_files",
-    description="Search for text within files (grep-like). Useful for finding code, configuration values, or text across multiple files.",
+    description="Search for text within files (grep-like). Supports both absolute and relative paths. Useful for finding code, configuration values, or text across multiple files.",
     parameters={
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Directory to search in"
+                "description": "Directory to search in. Can be absolute or relative (e.g., 'C:\\projects', './src', or '.')"
             },
             "search_text": {
                 "type": "string",
@@ -1139,7 +1149,7 @@ def find_in_files(path: str, search_text: str, file_pattern: str = "*", case_sen
     Search for text within files (like grep).
 
     Args:
-        path: Directory to search in
+        path: Directory to search in (absolute or relative)
         search_text: Text to search for
         file_pattern: File pattern to search within (default: all files)
         case_sensitive: Whether search is case-sensitive (default: False)
@@ -1154,10 +1164,10 @@ def find_in_files(path: str, search_text: str, file_pattern: str = "*", case_sen
         Dict with matching files and line numbers
     """
     import fnmatch
-    
+
     try:
-        # Normalize path
-        path = os.path.abspath(path)
+        # Normalize path to absolute
+        path = _normalize_path(path)
         
         # Check if exists and is directory
         if not os.path.exists(path):
