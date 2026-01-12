@@ -1372,7 +1372,11 @@ def web_search(query: str, max_results: int = 5) -> dict:
     logger = logging.getLogger(__name__)
 
     try:
-        from duckduckgo_search import DDGS
+        # Try new package name first (ddgs), fall back to old (duckduckgo-search)
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            from duckduckgo_search import DDGS
         import server_config as config
 
         logger.info(f"Web search initiated: query='{query}', max_results={max_results}")
@@ -1476,7 +1480,7 @@ def web_search(query: str, max_results: int = 5) -> dict:
             "results": [],
             "count": 0,
             "success": False,
-            "error": "duckduckgo-search library not installed. Install with: pip install duckduckgo-search"
+            "error": "ddgs library not installed. Install with: pip install ddgs (or pip install duckduckgo-search for older version)"
         }
     except Exception as e:
         logger.error(f"Unexpected error in web_search: {type(e).__name__}: {e}", exc_info=True)

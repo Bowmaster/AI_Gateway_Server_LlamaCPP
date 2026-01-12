@@ -13,6 +13,6 @@ httpx>=0.24.0
 rich>=13.0.0
 
 # Web search and scraping tools
-duckduckgo-search>=4.0.0
+ddgs>=0.1.0  # New package name (was duckduckgo-search)
 beautifulsoup4>=4.12.0
 lxml>=4.9.0

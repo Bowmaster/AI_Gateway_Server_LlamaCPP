@@ -123,7 +123,7 @@ pip install huggingface_hub nvidia-ml-py  # HuggingFace downloads + GPU detectio
 # Install web search and scraping tools
 Write-Host ""
 Write-Host "Installing web search and scraping tools..." -ForegroundColor Yellow
-pip install duckduckgo-search beautifulsoup4 lxml
+pip install ddgs beautifulsoup4 lxml
 
 # Verify installation
 Write-Host ""
@@ -159,7 +159,7 @@ except ImportError as e:
 
 print("\n=== Installed Packages ===\n")
 import pkg_resources
-packages = ['llama-cpp-python', 'fastapi', 'uvicorn', 'pydantic', 'requests', 'rich', 'psutil', 'huggingface-hub', 'httpx', 'duckduckgo-search', 'beautifulsoup4', 'lxml']
+packages = ['llama-cpp-python', 'fastapi', 'uvicorn', 'pydantic', 'requests', 'rich', 'psutil', 'huggingface-hub', 'httpx', 'ddgs', 'beautifulsoup4', 'lxml']
 for package in packages:
     try:
         version = pkg_resources.get_distribution(package).version

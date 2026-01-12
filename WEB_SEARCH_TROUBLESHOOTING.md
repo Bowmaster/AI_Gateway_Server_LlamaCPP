@@ -20,9 +20,14 @@ This will test:
 **Symptom:** Import error messages
 **Solution:**
 ```bash
-pip install duckduckgo-search
+pip install ddgs
 # Or upgrade if already installed
-pip install --upgrade duckduckgo-search
+pip install --upgrade ddgs
+
+# Note: The old package name was 'duckduckgo-search'
+# If you have that installed, uninstall it first:
+pip uninstall duckduckgo-search -y
+pip install ddgs
 ```
 
 ### 2. No Results Returned
@@ -60,19 +65,23 @@ pip install --upgrade duckduckgo-search
 ddgs = DDGS(timeout=30)  # Increase from 20 to 30 seconds
 ```
 
-### 4. Library API Changes
-**Symptom:** Attribute errors, unexpected types
+### 4. Library API Changes / Package Rename
+**Symptom:** Attribute errors, unexpected types, or RuntimeWarning about package rename
 **Solution:**
 ```bash
+# The package was renamed from 'duckduckgo-search' to 'ddgs'
+# Uninstall old package and install new one:
+pip uninstall duckduckgo-search -y
+pip install ddgs
+
 # Check version
-pip show duckduckgo-search
+pip show ddgs
 
-# If outdated (< 4.0):
-pip install --upgrade duckduckgo-search
-
-# If too new and broken, pin to known working version:
-pip install duckduckgo-search==4.1.1
+# If issues persist, try upgrading:
+pip install --upgrade ddgs
 ```
+
+**Note:** The old `duckduckgo-search` package (v8.1.1+) shows a RuntimeWarning and may return empty results. Always use the new `ddgs` package.
 
 ### 5. Results But Not Reaching LLM
 **Symptoms:**
@@ -210,7 +219,11 @@ python test_web_search.py "your specific query here"
 
 ### Check DuckDuckGo Directly
 ```python
-from duckduckgo_search import DDGS
+# Try new package first
+try:
+    from ddgs import DDGS
+except ImportError:
+    from duckduckgo_search import DDGS
 
 ddgs = DDGS(timeout=20)
 results = ddgs.text("test query", max_results=3)
@@ -284,7 +297,8 @@ Web search is working when:
 
 1. **Check library version:**
    ```bash
-   pip show duckduckgo-search
+   pip show ddgs
+   # If you see 'duckduckgo-search' instead, uninstall it and install ddgs
    ```
 
 2. **Try different query:**
@@ -304,7 +318,7 @@ Web search is working when:
 5. **Report issue:**
    - Include output from `test_web_search.py`
    - Include relevant server logs
-   - Include duckduckgo-search version
+   - Include ddgs (or duckduckgo-search) version
 
 ---
 

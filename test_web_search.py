@@ -21,21 +21,30 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def test_duckduckgo_import():
-    """Test if duckduckgo-search library is properly installed"""
+    """Test if ddgs library is properly installed"""
     print("=" * 60)
-    print("1. Testing duckduckgo-search import...")
+    print("1. Testing ddgs import...")
     print("=" * 60)
 
     try:
-        from duckduckgo_search import DDGS
-        import duckduckgo_search
-        print(f"✓ duckduckgo-search imported successfully")
-        print(f"  Version: {duckduckgo_search.__version__ if hasattr(duckduckgo_search, '__version__') else 'unknown'}")
-        print(f"  Location: {duckduckgo_search.__file__}")
+        # Try new package name first
+        try:
+            from ddgs import DDGS
+            import ddgs as search_module
+            print(f"✓ ddgs imported successfully (new package)")
+        except ImportError:
+            # Fall back to old package name
+            from duckduckgo_search import DDGS
+            import duckduckgo_search as search_module
+            print(f"⚠ duckduckgo-search imported (old package name)")
+            print(f"  Recommendation: Install new package with: pip install ddgs")
+
+        print(f"  Version: {search_module.__version__ if hasattr(search_module, '__version__') else 'unknown'}")
+        print(f"  Location: {search_module.__file__}")
         return True
     except ImportError as e:
-        print(f"✗ Failed to import duckduckgo-search: {e}")
-        print("\nInstall with: pip install duckduckgo-search")
+        print(f"✗ Failed to import ddgs or duckduckgo-search: {e}")
+        print("\nInstall with: pip install ddgs")
         return False
 
 def test_basic_search(query="Python programming"):
@@ -45,7 +54,11 @@ def test_basic_search(query="Python programming"):
     print("=" * 60)
 
     try:
-        from duckduckgo_search import DDGS
+        # Try new package name first, fall back to old
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            from duckduckgo_search import DDGS
 
         print(f"Creating DDGS instance...")
         ddgs = DDGS(timeout=20)
@@ -193,10 +206,11 @@ def main():
     else:
         print("✗ SOME TESTS FAILED - See errors above")
         print("\nCommon issues:")
-        print("  1. Library not installed: pip install duckduckgo-search")
+        print("  1. Library not installed: pip install ddgs")
         print("  2. Network/firewall blocking DuckDuckGo")
         print("  3. Rate limiting from DuckDuckGo (wait a few minutes)")
-        print("  4. Outdated library version: pip install --upgrade duckduckgo-search")
+        print("  4. Outdated library version: pip install --upgrade ddgs")
+        print("  5. Old package name: uninstall duckduckgo-search and install ddgs")
         return 1
 
 if __name__ == "__main__":
