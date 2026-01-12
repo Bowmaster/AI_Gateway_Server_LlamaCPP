@@ -28,34 +28,39 @@ class LlamaServerManager:
         self.cache_dir = Path(config.get('cache_dir', './models'))
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         
-    def start(self, model_path_or_hf: str, use_hf: bool = False) -> bool:
+    def start(self, model_path_or_hf: str, use_hf: bool = False, ctx_size: Optional[int] = None) -> bool:
         """
         Start llama-server with the specified model.
-        
+
         Args:
             model_path_or_hf: Either a local path OR HuggingFace repo:quantization string
             use_hf: If True, treat model_path_or_hf as HuggingFace identifier
-            
+            ctx_size: Override context size (if None, uses config default)
+
         Returns:
             True if started successfully, False otherwise
         """
         if self.is_running:
             logger.warning("llama-server is already running")
             return True
-        
+
         # Validate executable exists
         executable = self.config['executable']
         if not os.path.exists(executable):
             logger.error(f"llama-server executable not found: {executable}")
             return False
-        
+
+        # Determine effective context size (parameter override or config default)
+        effective_ctx_size = ctx_size if ctx_size is not None else self.config.get('ctx_size', 12288)
+        self.effective_ctx_size = effective_ctx_size  # Store for retrieval
+
         # Build command line arguments
         cmd = [
             executable,
             "--host", self.config['host'],
             "--port", str(self.config['port']),
         ]
-        
+
         # Add model - either local path or HuggingFace
         if use_hf:
             # HuggingFace download mode
@@ -67,18 +72,18 @@ class LlamaServerManager:
                 logger.error(f"Model file not found: {model_path_or_hf}")
                 return False
             cmd.extend(["--model", model_path_or_hf])
-        
-        # Add context size and GPU layers
+
+        # Add context size and GPU layers (using effective_ctx_size)
         cmd.extend([
-            "--ctx-size", str(self.config.get('ctx_size', 12288)),  # Use full flag name for clarity
+            "--ctx-size", str(effective_ctx_size),
             "-n", str(self.config.get('n_predict', 8192)),
             "--n-gpu-layers", str(self.config.get('n_gpu_layers', -1)),
         ])
-        
+
         # Add threads if specified
         if self.config.get('threads'):
             cmd.extend(["--threads", str(self.config['threads'])])
-        
+
         # Add any additional args from config
         if self.config.get('additional_args'):
             cmd.extend(self.config['additional_args'])
@@ -86,7 +91,7 @@ class LlamaServerManager:
         # Log hardware configuration being used
         logger.info("Hardware Configuration:")
         logger.info(f"  GPU Layers: {self.config.get('n_gpu_layers', -1)}")
-        logger.info(f"  Context Size: {self.config.get('ctx_size', 12288)} tokens")
+        logger.info(f"  Context Size: {effective_ctx_size} tokens")
         logger.info(f"  CPU Threads: {self.config.get('threads', 'auto')}")
 
         logger.info(f"Starting llama-server with command: {' '.join(cmd)}")
@@ -237,27 +242,28 @@ class LlamaServerManager:
             logger.error(f"Error stopping llama-server: {e}")
             return False
     
-    def restart(self, model_path_or_hf: str, use_hf: bool = False) -> bool:
+    def restart(self, model_path_or_hf: str, use_hf: bool = False, ctx_size: Optional[int] = None) -> bool:
         """
         Restart llama-server with a new model.
-        
+
         Args:
             model_path_or_hf: Path to model or HuggingFace identifier
             use_hf: Whether to use HuggingFace download
-            
+            ctx_size: Override context size (if None, uses config default)
+
         Returns:
             True if restarted successfully, False otherwise
         """
-        logger.info(f"Restarting llama-server with model: {model_path_or_hf}")
-        
+        logger.info(f"Restarting llama-server with model: {model_path_or_hf}, ctx_size: {ctx_size}")
+
         if not self.stop():
             logger.error("Failed to stop llama-server for restart")
             return False
-        
+
         # Brief pause to ensure clean shutdown
         time.sleep(1)
-        
-        return self.start(model_path_or_hf, use_hf=use_hf)
+
+        return self.start(model_path_or_hf, use_hf=use_hf, ctx_size=ctx_size)
     
     def is_healthy(self) -> bool:
         """

@@ -5,7 +5,15 @@ server_config.py - Configuration for AI Lab Server (llama.cpp edition)
 import os
 import logging
 from pathlib import Path
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, Tuple, Optional, List
+
+# Token counting with tiktoken (accurate) or fallback to estimation
+try:
+    import tiktoken
+    _HAS_TIKTOKEN = True
+except ImportError:
+    _HAS_TIKTOKEN = False
+    logging.warning("tiktoken not available - using character-based token estimation")
 
 # Import hardware detector for auto-configuration
 try:
@@ -268,6 +276,22 @@ MAX_CONVERSATION_TOKENS = 3000
 MAX_CONVERSATION_MESSAGES = 0
 
 # ============================================================================
+# Context Management Configuration
+# ============================================================================
+
+# Summarization thresholds (as percentage of context)
+CONTEXT_SUMMARIZATION_THRESHOLD = 0.70  # Trigger summarization at 70% of context
+CONTEXT_SUMMARIZATION_TARGET = 0.50     # Summarize down to 50% of context
+CONTEXT_RESERVE_FOR_OUTPUT = 0.20       # Reserve 20% of context for output
+
+# Summarization parameters
+CONTEXT_MINIMUM_RECENT_MESSAGES = 4     # Keep at least 4 recent messages in full
+CONTEXT_SUMMARY_MAX_TOKENS = 500        # Maximum tokens for the summary message
+
+# Hard limit safety - reject requests that would exceed this
+CONTEXT_HARD_LIMIT_PERCENT = 0.95       # Never exceed 95% of context
+
+# ============================================================================
 # Tool/Function Calling
 # ============================================================================
 
@@ -509,3 +533,126 @@ def get_recommended_models_for_hardware() -> list:
         return list(MODELS.keys())
 
     return recommended
+
+
+# ============================================================================
+# Token Counting Functions
+# ============================================================================
+
+# Cached tiktoken encoder for performance
+_tokenizer = None
+
+
+def get_tokenizer():
+    """
+    Get or create the tiktoken encoder (cached for performance).
+
+    Uses cl100k_base encoding which is broadly compatible with modern LLMs.
+    While not exact for Llama/Qwen, it's typically within 5% accuracy.
+
+    Returns:
+        tiktoken Encoding object, or None if tiktoken unavailable
+    """
+    global _tokenizer
+    if not _HAS_TIKTOKEN:
+        return None
+    if _tokenizer is None:
+        _tokenizer = tiktoken.get_encoding("cl100k_base")
+    return _tokenizer
+
+
+def count_tokens(text: str) -> int:
+    """
+    Count tokens using tiktoken for accurate measurement.
+
+    Falls back to character-based estimation if tiktoken unavailable.
+
+    Args:
+        text: String to count tokens for
+
+    Returns:
+        Token count (exact with tiktoken, estimated otherwise)
+    """
+    if not text:
+        return 0
+
+    tokenizer = get_tokenizer()
+    if tokenizer is not None:
+        return len(tokenizer.encode(text))
+    else:
+        # Fallback: conservative 3.5 chars/token (accounts for code/mixed content)
+        return max(1, int(len(text) / 3.5))
+
+
+def count_messages_tokens(messages: List[Dict[str, str]]) -> int:
+    """
+    Count total tokens for a list of messages.
+
+    Includes overhead for role markers and message formatting.
+    Uses ~4 tokens overhead per message for role/separators (conservative).
+
+    Args:
+        messages: List of message dicts with 'role' and 'content'
+
+    Returns:
+        Total token count
+    """
+    total = 0
+    for msg in messages:
+        # ~4 tokens overhead per message for <|role|>, separators, etc.
+        overhead = 4
+        content = msg.get('content', '')
+        total += count_tokens(content) + overhead
+    return total
+
+
+def get_model_context_length(model_key: str) -> int:
+    """
+    Get the native context length for a model.
+
+    Args:
+        model_key: Model key from MODELS registry
+
+    Returns:
+        Context length in tokens, or default 8192 if unknown
+    """
+    model_info = MODELS.get(model_key)
+    if model_info:
+        return model_info.get('context_length', 8192)
+    return 8192
+
+
+def calculate_available_output_tokens(
+    ctx_size: int,
+    history_tokens: int,
+    system_tokens: int = 0,
+    summary_tokens: int = 0,
+    min_output: int = 256,
+    max_output: int = 8192
+) -> int:
+    """
+    Calculate maximum available tokens for model output.
+
+    Formula: available = ctx_size - used - 5% safety buffer
+
+    Args:
+        ctx_size: Total context window size
+        history_tokens: Token count in conversation history
+        system_tokens: Token count in system prompt
+        summary_tokens: Token count in context summary
+        min_output: Minimum output tokens to guarantee
+        max_output: Maximum output tokens cap
+
+    Returns:
+        Available tokens for output, clamped to [min_output, max_output]
+    """
+    # Reserve 5% for safety (accounts for any tiktoken vs model variance)
+    safety_buffer = int(ctx_size * 0.05)
+
+    used_tokens = history_tokens + system_tokens + summary_tokens
+    available = ctx_size - used_tokens - safety_buffer
+
+    # Clamp to reasonable range
+    result = max(min_output, min(available, max_output))
+
+    return result

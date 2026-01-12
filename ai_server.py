@@ -61,6 +61,12 @@ class ServerState:
         self.pending_messages: List[Dict] = []  # Message history when approval was requested
         self.pending_generation_params: Dict = {}  # Temperature, max_tokens, etc. for continuation
 
+        # Context management state
+        self.context_summary: Optional[str] = None  # LLM-generated summary of older messages
+        self.summarized_message_count: int = 0      # Number of messages included in summary
+        self.current_context_size: int = 0          # Current model's effective ctx_size
+        self.current_history_tokens: int = 0        # Cached token count (updated on changes)
+
 state = ServerState()
 
 # ============================================================================
@@ -110,6 +116,13 @@ class HealthResponse(BaseModel):
     is_generating: bool
     n_gpu_layers: int
     tools_enabled: bool
+    # Context management fields
+    context_size: int
+    context_used_tokens: int
+    context_used_percent: float
+    context_available_output: int
+    has_summary: bool
+    summarized_messages: int
 
 class ModelInfo(BaseModel):
     key: str
@@ -197,18 +210,196 @@ def get_device_string() -> str:
         return f"Hybrid (GPU: {n_gpu_layers} layers)"
 
 def build_messages_for_llama(system_prompt: Optional[str] = None) -> List[Dict]:
-    """Build messages array with system prompt and conversation history"""
+    """
+    Build messages array with system prompt, context summary, and conversation history.
+
+    Order of messages:
+    1. System prompt (if any)
+    2. Context summary (if conversation has been summarized)
+    3. Recent conversation history
+    """
     messages = []
-    
+
     # Add system prompt if provided
     prompt = system_prompt or state.system_prompt
     if prompt:
         messages.append({"role": "system", "content": prompt})
-    
+
+    # Add context summary if we have one (from previous summarization)
+    if state.context_summary:
+        messages.append({
+            "role": "system",
+            "content": f"[Previous conversation summary: {state.context_summary}]"
+        })
+
     # Add conversation history
     messages.extend(state.conversation_history)
-    
+
     return messages
+
+
+def summarize_conversation_history(messages_to_summarize: List[Dict], max_summary_tokens: int = 500) -> str:
+    """
+    Use loaded LLM to generate concise summary of older messages.
+
+    Args:
+        messages_to_summarize: List of older messages to condense
+        max_summary_tokens: Maximum tokens for the summary
+
+    Returns:
+        Summary string, or empty string if summarization fails
+    """
+    if not messages_to_summarize:
+        return ""
+
+    if not state.llama_manager or not state.llama_manager.is_healthy():
+        logger.warning("Cannot summarize: llama-server not healthy")
+        return ""
+
+    # Build summarization prompt
+    conversation_text = "\n".join([
+        f"{msg['role'].upper()}: {msg['content']}"
+        for msg in messages_to_summarize
+    ])
+
+    summarization_messages = [
+        {
+            "role": "system",
+            "content": "You are a conversation summarizer. Summarize the following conversation concisely, preserving key facts, decisions, code snippets, and important context. Be brief but complete."
+        },
+        {
+            "role": "user",
+            "content": f"Summarize this conversation:\n\n{conversation_text}\n\nProvide a concise summary:"
+        }
+    ]
+
+    try:
+        llama_url = state.llama_manager.server_url
+        payload = {
+            "messages": summarization_messages,
+            "temperature": 0.3,  # Low temperature for factual summary
+            "max_tokens": max_summary_tokens,
+            "stream": False
+        }
+
+        response = requests.post(
+            f"{llama_url}/v1/chat/completions",
+            json=payload,
+            timeout=60
+        )
+
+        if response.status_code == 200:
+            result = response.json()
+            summary = result["choices"][0]["message"]["content"]
+            summary_tokens = config.count_tokens(summary)
+            logger.info(f"Generated summary: {summary_tokens} tokens from {len(messages_to_summarize)} messages")
+            return summary.strip()
+        else:
+            logger.error(f"Summarization failed: {response.status_code}")
+            return ""
+
+    except Exception as e:
+        logger.error(f"Summarization error: {e}")
+        return ""
+
+
+def check_and_summarize_if_needed() -> bool:
+    """
+    Check if conversation history needs summarization and perform it if so.
+
+    Returns:
+        True if summarization was performed, False otherwise
+    """
+    if not state.conversation_history:
+        return False
+
+    # Get current context limit
+    ctx_limit = state.current_context_size or config.LLAMA_SERVER_CONFIG.get('ctx_size', 12288)
+
+    # Calculate threshold
+    threshold_tokens = int(ctx_limit * config.CONTEXT_SUMMARIZATION_THRESHOLD)
+
+    # Calculate current usage with tiktoken (accurate)
+    system_tokens = config.count_tokens(state.system_prompt) if state.system_prompt else 0
+    summary_tokens = config.count_tokens(state.context_summary) if state.context_summary else 0
+    history_tokens = config.count_messages_tokens(state.conversation_history)
+
+    total_tokens = system_tokens + summary_tokens + history_tokens
+    state.current_history_tokens = total_tokens  # Cache for health endpoint
+
+    logger.debug(f"Context usage: {total_tokens}/{ctx_limit} tokens ({100*total_tokens/ctx_limit:.1f}%)")
+
+    # Check if we need to summarize
+    if total_tokens < threshold_tokens:
+        return False
+
+    logger.info(f"Context threshold exceeded: {total_tokens}/{threshold_tokens}. Summarizing...")
+
+    # Determine how many messages to keep in full
+    min_recent = config.CONTEXT_MINIMUM_RECENT_MESSAGES
+    if len(state.conversation_history) <= min_recent:
+        logger.warning("Too few messages to summarize, skipping")
+        return False
+
+    # Find split point: keep recent messages, summarize older ones
+    messages_to_keep = state.conversation_history[-min_recent:]
+    messages_to_summarize = state.conversation_history[:-min_recent]
+
+    # Include any existing summary context in what we're summarizing
+    if state.context_summary:
+        messages_to_summarize = [
+            {"role": "system", "content": f"Previous context summary: {state.context_summary}"}
+        ] + messages_to_summarize
+
+    # Generate summary
+    summary = summarize_conversation_history(
+        messages_to_summarize,
+        max_summary_tokens=config.CONTEXT_SUMMARY_MAX_TOKENS
+    )
+
+    if summary:
+        # Update state
+        state.context_summary = summary
+        state.summarized_message_count += len(messages_to_summarize)
+        state.conversation_history = messages_to_keep
+
+        # Recalculate and cache token counts
+        new_history_tokens = config.count_messages_tokens(state.conversation_history)
+        new_summary_tokens = config.count_tokens(summary)
+        state.current_history_tokens = system_tokens + new_summary_tokens + new_history_tokens
+
+        logger.info(
+            f"Summarization complete. "
+            f"Reduced from {total_tokens} to {state.current_history_tokens} tokens."
+        )
+        return True
+    else:
+        logger.error("Summarization failed, context may exceed limits")
+        return False
+
+
+def validate_context_fits(messages: List[Dict], max_tokens: int) -> bool:
+    """
+    Validate that messages + expected output will fit in context.
+
+    Args:
+        messages: List of message dictionaries to send
+        max_tokens: Maximum tokens expected for output
+
+    Returns:
+        True if safe, False if would overflow
+    """
+    ctx_limit = state.current_context_size or config.LLAMA_SERVER_CONFIG.get('ctx_size', 12288)
+    hard_limit = int(ctx_limit * config.CONTEXT_HARD_LIMIT_PERCENT)
+
+    messages_tokens = config.count_messages_tokens(messages)
+    total_needed = messages_tokens + max_tokens
+
+    if total_needed > hard_limit:
+        logger.warning(f"Context overflow prevented: {total_needed} > {hard_limit}")
+        return False
+    return True
+
 
 def call_llama_server(messages: List[Dict], **kwargs) -> Dict:
     """
@@ -382,7 +573,7 @@ async def startup_event():
         logger.info(f"Auto-starting llama-server with model: {config.DEFAULT_MODEL_KEY}")
 
         try:
-            # NEW: Use get_model_source to determine local vs HF
+            # Use get_model_source to determine local vs HF
             source_type, identifier = config.get_model_source(config.DEFAULT_MODEL_KEY)
 
             logger.info(f"  Source: {source_type}")
@@ -390,11 +581,25 @@ async def startup_event():
 
             use_hf = (source_type == "huggingface")
 
-            # Start with use_hf flag
-            if state.llama_manager.start(identifier, use_hf=use_hf):
+            # Calculate model-specific context size
+            model_info = config.get_model_info(config.DEFAULT_MODEL_KEY)
+            model_ctx_length = model_info.get('context_length', 8192) if model_info else 8192
+            hw_ctx_limit = config.LLAMA_SERVER_CONFIG.get('ctx_size', 12288)
+            effective_ctx_size = min(model_ctx_length, hw_ctx_limit)
+
+            logger.info(f"  Model native context: {model_ctx_length}")
+            logger.info(f"  Hardware context limit: {hw_ctx_limit}")
+            logger.info(f"  Effective context size: {effective_ctx_size}")
+
+            # Start with model-specific context size
+            if state.llama_manager.start(identifier, use_hf=use_hf, ctx_size=effective_ctx_size):
                 logger.info(f"✓ llama-server started successfully")
                 logger.info(f"  Model: {config.DEFAULT_MODEL_KEY}")
                 logger.info(f"  Device: {get_device_string()}")
+                logger.info(f"  Context: {effective_ctx_size} tokens")
+
+                # Initialize context management state
+                state.current_context_size = effective_ctx_size
 
                 if use_hf:
                     logger.info(f"  Downloaded from HuggingFace")
@@ -426,12 +631,28 @@ async def shutdown_event():
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
-    """Health check endpoint"""
+    """Health check endpoint with context status"""
     model_info = config.get_model_info(state.current_model_key)
     model_name = model_info["name"] if model_info else "Unknown"
-    
+
     is_loaded = state.llama_manager and state.llama_manager.is_healthy()
-    
+
+    # Calculate context usage with tiktoken
+    ctx_size = state.current_context_size or config.LLAMA_SERVER_CONFIG.get('ctx_size', 12288)
+    system_tokens = config.count_tokens(state.system_prompt) if state.system_prompt else 0
+    summary_tokens = config.count_tokens(state.context_summary) if state.context_summary else 0
+    history_tokens = config.count_messages_tokens(state.conversation_history)
+
+    used_tokens = system_tokens + summary_tokens + history_tokens
+    used_percent = (used_tokens / ctx_size) * 100 if ctx_size > 0 else 0
+
+    available_output = config.calculate_available_output_tokens(
+        ctx_size=ctx_size,
+        history_tokens=history_tokens,
+        system_tokens=system_tokens,
+        summary_tokens=summary_tokens
+    )
+
     return HealthResponse(
         status="ok" if is_loaded else "degraded",
         model_loaded=is_loaded,
@@ -441,7 +662,14 @@ async def health_check():
         system_prompt=state.system_prompt,
         is_generating=state.is_generating,
         n_gpu_layers=config.LLAMA_SERVER_CONFIG['n_gpu_layers'],
-        tools_enabled=state.tools_enabled
+        tools_enabled=state.tools_enabled,
+        # Context management fields
+        context_size=ctx_size,
+        context_used_tokens=used_tokens,
+        context_used_percent=round(used_percent, 1),
+        context_available_output=available_output,
+        has_summary=state.context_summary is not None,
+        summarized_messages=state.summarized_message_count
     )
 
 @app.get("/models", response_model=ModelsListResponse)
@@ -513,21 +741,35 @@ async def switch_model(request: ModelSwitchRequest):
         if use_hf:
             logger.info(f"Downloading from HuggingFace: {identifier}")
 
-        # Restart with new model
-        if state.llama_manager.restart(identifier, use_hf=use_hf):
+        # Calculate model-specific context size
+        model_ctx_length = model_info.get('context_length', 8192)
+        hw_ctx_limit = config.LLAMA_SERVER_CONFIG.get('ctx_size', 12288)
+        effective_ctx_size = min(model_ctx_length, hw_ctx_limit)
+
+        logger.info(f"Model native context: {model_ctx_length}, Hardware limit: {hw_ctx_limit}")
+        logger.info(f"Using effective context size: {effective_ctx_size}")
+
+        # Restart with new model and model-specific context size
+        if state.llama_manager.restart(identifier, use_hf=use_hf, ctx_size=effective_ctx_size):
             state.current_model_key = request.model_key
             state.conversation_history = []
+
+            # Update context management state
+            state.current_context_size = effective_ctx_size
+            state.context_summary = None
+            state.summarized_message_count = 0
+            state.current_history_tokens = 0
 
             # Update system prompt for new model
             state.system_prompt = config.get_system_prompt_for_model(request.model_key)
             if state.system_prompt != config.DEFAULT_SYSTEM_PROMPT:
                 logger.info(f"Using model-specific system prompt for {request.model_key}")
 
-            logger.info(f"✓ Switched to {request.model_key}")
+            logger.info(f"✓ Switched to {request.model_key} with {effective_ctx_size} context")
 
             return ModelSwitchResponse(
                 status="success",
-                message=f"Switched to {request.model_key}" +
+                message=f"Switched to {request.model_key} (ctx: {effective_ctx_size})" +
                        (" (downloaded from HF)" if use_hf else ""),
                 previous_model=previous_key,
                 new_model=request.model_key,
@@ -553,13 +795,16 @@ async def chat(request: ChatRequest):
         state.is_generating = True
         import time
         start_time = time.time()
-        
+
         # Update conversation history from request
         state.conversation_history = [{"role": m.role, "content": m.content} for m in request.messages]
-        
+
+        # Check if summarization is needed and perform it
+        check_and_summarize_if_needed()
+
         # Determine if tools should be enabled for this request
         tools_enabled = request.enable_tools if request.enable_tools is not None else state.tools_enabled
-        
+
         # Prepare tool definitions if enabled
         tools_payload = None
         if tools_enabled:
@@ -572,31 +817,59 @@ async def chat(request: ChatRequest):
                 }
                 for tool in tools_payload
             ]
-            
+
             #llama_payload["tools"] = formatted_tools
             #llama_payload["tool_choice"] = "auto"
-        
+
         # Build messages with system prompt
         messages = build_messages_for_llama(request.system_prompt)
-        
+
+        # Calculate dynamic max_tokens based on available context
+        ctx_size = state.current_context_size or config.LLAMA_SERVER_CONFIG.get('ctx_size', 12288)
+        system_tokens = config.count_tokens(state.system_prompt) if state.system_prompt else 0
+        summary_tokens = config.count_tokens(state.context_summary) if state.context_summary else 0
+        history_tokens = config.count_messages_tokens(state.conversation_history)
+
+        available_output = config.calculate_available_output_tokens(
+            ctx_size=ctx_size,
+            history_tokens=history_tokens,
+            system_tokens=system_tokens,
+            summary_tokens=summary_tokens
+        )
+
+        # Use the minimum of: user request, available space
+        effective_max_tokens = min(
+            request.max_tokens or config.DEFAULT_MAX_TOKENS,
+            available_output
+        )
+
+        logger.debug(f"Output tokens: requested={request.max_tokens}, available={available_output}, using={effective_max_tokens}")
+
+        # Validate context fits (hard limit check)
+        if not validate_context_fits(messages, effective_max_tokens):
+            raise HTTPException(
+                status_code=400,
+                detail="Request would exceed context limit. Try a shorter conversation or lower max_tokens."
+            )
+
         # Generate response (with potential tool iterations)
         tools_used = []
         iterations = 0
         max_iterations = config.MAX_TOOL_ITERATIONS
-        
+
         total_tokens_in = 0
         total_tokens_out = 0
-        
+
         # This is the complete tool loop section that goes in your /chat endpoint
         while iterations < max_iterations:
             iterations += 1
             logger.info(f"Generation iteration {iterations}/{max_iterations}")
-            
+
             # Call llama-server
             llama_response = call_llama_server(
                 messages=messages,
                 temperature=request.temperature,
-                max_tokens=request.max_tokens,
+                max_tokens=effective_max_tokens,
                 top_p=request.top_p,
                 top_k=request.top_k,
                 repeat_penalty=request.repeat_penalty,
