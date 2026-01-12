@@ -1368,25 +1368,54 @@ def web_search(query: str, max_results: int = 5) -> dict:
     Returns:
         Dict with search results containing title, snippet, and URL
     """
+    import logging
+    logger = logging.getLogger(__name__)
+
     try:
         from duckduckgo_search import DDGS
         import server_config as config
 
+        logger.info(f"Web search initiated: query='{query}', max_results={max_results}")
+
         # Limit max_results to prevent overwhelming context
         max_results = min(max_results, 10)
 
-        # Perform search
+        # Perform search with timeout
         results = []
-        with DDGS() as ddgs:
+        try:
+            # Create DDGS instance with timeout
+            ddgs = DDGS(timeout=20)
+
+            # Get search results (returns a generator/list depending on version)
             search_results = ddgs.text(query, max_results=max_results)
 
+            logger.debug(f"Search results type: {type(search_results)}")
+
+            # Handle both generator and list returns
+            if search_results is None:
+                logger.warning("DDGS returned None")
+                return {
+                    "query": query,
+                    "results": [],
+                    "count": 0,
+                    "success": False,
+                    "error": "DuckDuckGo returned no results. Try a different query or wait a moment."
+                }
+
+            # Iterate through results
             for idx, result in enumerate(search_results):
                 if idx >= max_results:
                     break
 
+                logger.debug(f"Result {idx}: {result}")
+
                 title = result.get("title", "")
                 snippet = result.get("body", "")
                 url = result.get("href", "")
+
+                if not url:  # Skip results without URLs
+                    logger.warning(f"Skipping result {idx} - no URL")
+                    continue
 
                 # Sanitize title and snippet to prevent prompt injection
                 if config.WEB_CONTENT_SANITIZATION:
@@ -1399,6 +1428,29 @@ def web_search(query: str, max_results: int = 5) -> dict:
                     "snippet": snippet,
                     "url": url,
                 })
+
+            logger.info(f"Found {len(results)} results for query: '{query}'")
+
+        except Exception as search_error:
+            logger.error(f"DDGS search error: {type(search_error).__name__}: {search_error}", exc_info=True)
+            return {
+                "query": query,
+                "results": [],
+                "count": 0,
+                "success": False,
+                "error": f"Search API error: {type(search_error).__name__}: {str(search_error)}"
+            }
+
+        # Check if we got any results
+        if not results:
+            logger.warning(f"No results found for query: '{query}'")
+            return {
+                "query": query,
+                "results": [],
+                "count": 0,
+                "success": False,
+                "error": "No results found. Try rephrasing your query or check internet connectivity."
+            }
 
         # Wrap results in clear delimiters for LLM safety
         formatted_results = []
@@ -1417,7 +1469,8 @@ def web_search(query: str, max_results: int = 5) -> dict:
             "security_note": "Content has been sanitized to prevent prompt injection attacks" if config.WEB_CONTENT_SANITIZATION else None
         }
 
-    except ImportError:
+    except ImportError as e:
+        logger.error(f"Import error: {e}")
         return {
             "query": query,
             "results": [],
@@ -1426,12 +1479,13 @@ def web_search(query: str, max_results: int = 5) -> dict:
             "error": "duckduckgo-search library not installed. Install with: pip install duckduckgo-search"
         }
     except Exception as e:
+        logger.error(f"Unexpected error in web_search: {type(e).__name__}: {e}", exc_info=True)
         return {
             "query": query,
             "results": [],
             "count": 0,
             "success": False,
-            "error": f"Search failed: {str(e)}"
+            "error": f"Search failed: {type(e).__name__}: {str(e)}"
         }
 
 @tool(
