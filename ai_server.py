@@ -123,6 +123,10 @@ class HealthResponse(BaseModel):
     context_available_output: int
     has_summary: bool
     summarized_messages: int
+    # Context with tools (shows true llama-server pressure)
+    tool_tokens: int
+    context_with_tools_tokens: int
+    context_with_tools_percent: float
 
 class ModelInfo(BaseModel):
     key: str
@@ -653,6 +657,19 @@ async def health_check():
         summary_tokens=summary_tokens
     )
 
+    # Calculate tool tokens (if tools enabled)
+    tool_tokens = 0
+    if state.tools_enabled:
+        tool_definitions = tools.get_available_tools()
+        # Format as OpenAI-style tool objects (how they're sent to llama-server)
+        formatted_tools = [{"type": "function", "function": tool} for tool in tool_definitions]
+        tool_json = json.dumps(formatted_tools)
+        tool_tokens = config.count_tokens(tool_json)
+
+    # Context with tools = what llama-server actually sees (excluding chat template overhead)
+    context_with_tools = used_tokens + tool_tokens
+    context_with_tools_percent = (context_with_tools / ctx_size) * 100 if ctx_size > 0 else 0
+
     return HealthResponse(
         status="ok" if is_loaded else "degraded",
         model_loaded=is_loaded,
@@ -669,7 +686,11 @@ async def health_check():
         context_used_percent=round(used_percent, 1),
         context_available_output=available_output,
         has_summary=state.context_summary is not None,
-        summarized_messages=state.summarized_message_count
+        summarized_messages=state.summarized_message_count,
+        # Context with tools
+        tool_tokens=tool_tokens,
+        context_with_tools_tokens=context_with_tools,
+        context_with_tools_percent=round(context_with_tools_percent, 1)
     )
 
 @app.get("/models", response_model=ModelsListResponse)

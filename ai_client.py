@@ -945,7 +945,9 @@ class ChatClient:
 
 [bold cyan]Context Management:[/bold cyan]
   Context Size: {health.get('context_size', 0):,} tokens
-  Used: [{ctx_color}]{health.get('context_used_tokens', 0):,}[/{ctx_color}] ({ctx_percent:.1f}%)
+  History Used: [{ctx_color}]{health.get('context_used_tokens', 0):,}[/{ctx_color}] ({ctx_percent:.1f}%)
+  Tool Definitions: {health.get('tool_tokens', 0):,} tokens
+  Total (with tools): {health.get('context_with_tools_tokens', 0):,} ({health.get('context_with_tools_percent', 0):.1f}%)
   Usage: [{ctx_color}]{ctx_bar}[/{ctx_color}]
   Available for Output: {health.get('context_available_output', 0):,} tokens
   Has Summary: {'Yes' if health.get('has_summary') else 'No'}

@@ -4,3 +4,4 @@ models/*
 llama.cpp/*
 .hardware_profile.json
 *.txt
+.conversations
