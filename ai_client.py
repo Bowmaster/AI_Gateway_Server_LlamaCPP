@@ -911,12 +911,26 @@ class ChatClient:
         console.print(Panel(help_text, title="Help", border_style="cyan", box=box.ROUNDED))
     
     def show_status(self):
-        """Show current status"""
+        """Show current status including context info"""
         try:
             response = requests.get(f"{self.server_url}/health", timeout=5)
             if response.status_code == 200:
                 health = response.json()
-                
+
+                # Context usage bar
+                ctx_percent = health.get('context_used_percent', 0)
+                ctx_bar_width = 20
+                filled = int(ctx_percent / 100 * ctx_bar_width)
+                ctx_bar = '[' + ('=' * filled) + (' ' * (ctx_bar_width - filled)) + ']'
+
+                # Color based on usage level
+                if ctx_percent < 50:
+                    ctx_color = "green"
+                elif ctx_percent < 70:
+                    ctx_color = "yellow"
+                else:
+                    ctx_color = "red"
+
                 status_text = f"""
 [bold cyan]Server Status:[/bold cyan]
   Status: [green]{health['status']}[/green]
@@ -928,6 +942,16 @@ class ChatClient:
   Model Loaded: {'✓' if health['model_loaded'] else '✗'}
   Generating: {'Yes' if health['is_generating'] else 'No'}
   Tools: {'Enabled' if health.get('tools_enabled', True) else 'Disabled'}
+
+[bold cyan]Context Management:[/bold cyan]
+  Context Size: {health.get('context_size', 0):,} tokens
+  History Used: [{ctx_color}]{health.get('context_used_tokens', 0):,}[/{ctx_color}] ({ctx_percent:.1f}%)
+  Tool Definitions: {health.get('tool_tokens', 0):,} tokens
+  Total (with tools): {health.get('context_with_tools_tokens', 0):,} ({health.get('context_with_tools_percent', 0):.1f}%)
+  Usage: [{ctx_color}]{ctx_bar}[/{ctx_color}]
+  Available for Output: {health.get('context_available_output', 0):,} tokens
+  Has Summary: {'Yes' if health.get('has_summary') else 'No'}
+  Summarized Messages: {health.get('summarized_messages', 0)}
 
 [bold cyan]Client Status:[/bold cyan]
   Messages: {len(self.conversation_history)}
