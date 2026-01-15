@@ -381,7 +381,7 @@ class ChatClient:
 
                             # Extract content delta
                             delta = chunk.get("choices", [{}])[0].get("delta", {})
-                            if "content" in delta:
+                            if "content" in delta and delta["content"] is not None:
                                 token = delta["content"]
                                 accumulated_response += token
 

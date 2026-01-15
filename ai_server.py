@@ -1400,7 +1400,7 @@ async def chat_stream(request: ChatRequest):
 
                             # Accumulate content from deltas
                             delta = chunk_data.get("choices", [{}])[0].get("delta", {})
-                            if "content" in delta:
+                            if "content" in delta and delta["content"] is not None:
                                 accumulated_content += delta["content"]
 
                             # Extract usage stats (typically in final event before [DONE])

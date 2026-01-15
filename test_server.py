@@ -258,7 +258,7 @@ def test_streaming_simple():
                             continue
 
                         delta = chunk.get("choices", [{}])[0].get("delta", {})
-                        if "content" in delta:
+                        if "content" in delta and delta["content"] is not None:
                             token = delta["content"]
                             accumulated += token
                             token_count += 1
@@ -326,7 +326,7 @@ def test_streaming_with_tools():
                             continue
 
                         delta = chunk.get("choices", [{}])[0].get("delta", {})
-                        if "content" in delta:
+                        if "content" in delta and delta["content"] is not None:
                             accumulated += delta["content"]
                             print(delta["content"], end="", flush=True)
                     except json.JSONDecodeError:
