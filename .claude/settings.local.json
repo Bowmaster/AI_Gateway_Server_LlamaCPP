@@ -4,7 +4,8 @@
       "Bash(./llama.cpp/llama-server.exe:*)",
       "Bash(dir \"C:\\\\Users\\\\blutterb\\\\Documents\\\\Github\\\\Bowmaster\\\\AI_Lab_Llama.cpp\")",
       "Bash(python -m py_compile:*)",
-      "Bash(python finetune.py:*)"
+      "Bash(python finetune.py:*)",
+      "Bash(pip show:*)"
     ]
   }
 }
