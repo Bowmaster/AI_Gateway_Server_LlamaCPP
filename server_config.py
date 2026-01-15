@@ -232,7 +232,10 @@ MODELS = {
         "local_path": "C:\\Users\\blutterb\\Documents\\Github\\Bowmaster\\AI_Lab_Llama.cpp\\models\\custom\\output_3b_test_q4_k_m.gguf",
         "description": "Fine-tuned on custom data",
         "context_length": 32768,
-        "is_local_finetune": True
+        "is_local_finetune": True,
+        "vram_estimate": "~2.5GB",
+        "recommended": False,
+        "usage": "Test fine-tuned model for training purposes"
     }
 }
 
@@ -548,7 +551,16 @@ def get_model_source(model_key: str) -> tuple:
 
     model_info = MODELS[model_key]
 
-    # Check for local file first
+    # Check for explicit local_path first (for fine-tuned models in MODELS dict)
+    if "local_path" in model_info:
+        local_path = model_info["local_path"]
+        source_type = "local_finetuned" if model_info.get("is_local_finetune") else "local"
+        if os.path.exists(local_path):
+            return (source_type, local_path)
+        # Path specified but doesn't exist - return it anyway for error handling
+        return (source_type, local_path)
+
+    # Check for local file in models directory
     if "filename" in model_info:
         local_path = os.path.join(MODELS_DIR, model_info["filename"])
         if os.path.exists(local_path):
