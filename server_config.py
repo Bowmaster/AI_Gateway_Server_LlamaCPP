@@ -226,6 +226,14 @@ MODELS = {
         "download_url": "https://huggingface.co/lmstudio-community/Llama-3.2-3B-Instruct-GGUF",
         "usage": "Quick testing: Rapid prototyping, basic chat, verifying setup",
     },
+    "my-finetuned": {
+        "name": "My Fine-tuned Model",
+        "filename": "output_3b_test_q4_k_m.gguf",
+        "local_path": "C:\\Users\\blutterb\\Documents\\Github\\Bowmaster\\AI_Lab_Llama.cpp\\models\\custom\\output_3b_test_q4_k_m.gguf",
+        "description": "Fine-tuned on custom data",
+        "context_length": 32768,
+        "is_local_finetune": True
+    }
 }
 
 # Update default to Qwen (better context handling)
