@@ -1000,6 +1000,7 @@ RAM: 32 GB
 CPU:  Dual CPU E5-2680 v4 (28 total cores, 56 total threads)
 GPU: None (But considering purchasing a low profile card that will fit in a 2u chassis)
 Memory: 256
+Extra Tools: Docker
 
 ## Code Style
 1. We should focus on safe, reliable, guardrailed executuion first and foremost.
