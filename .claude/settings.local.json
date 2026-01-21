@@ -9,10 +9,12 @@
       "Bash(prompt: install Python dependencies)",
       "Bash(prompt: run Python tests)",
       "Bash(prompt: start the FastAPI server)",
-      "Bash(prompt: create directory structure)"
+      "Bash(prompt: create directory structure)",
+      "WebFetch(domain:python-prompt-toolkit.readthedocs.io)"
     ],
     "additionalDirectories": [
-      "C:\\Users\\blutterb\\Documents\\Github\\Bowmaster\\Train_LLM"
+      "C:\\Users\\blutterb\\Documents\\Github\\Bowmaster\\Train_LLM",
+      "C:\\Users\\blutterb\\Documents\\Github\\Bowmaster\\AlertResponder"
     ]
   }
 }
