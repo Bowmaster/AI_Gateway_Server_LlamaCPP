@@ -226,11 +226,54 @@ MODELS = {
         "download_url": "https://huggingface.co/lmstudio-community/Llama-3.2-3B-Instruct-GGUF",
         "usage": "Quick testing: Rapid prototyping, basic chat, verifying setup",
     },
+    "my-finetuned": {
+        "name": "My Fine-tuned Model",
+        "filename": "output_3b_test_q4_k_m.gguf",
+        "local_path": "C:\\Users\\blutterb\\Documents\\Github\\Bowmaster\\AI_Lab_Llama.cpp\\models\\custom\\output_3b_test_q4_k_m.gguf",
+        "description": "Fine-tuned on custom data",
+        "context_length": 32768,
+        "is_local_finetune": True,
+        "vram_estimate": "~2.5GB",
+        "recommended": False,
+        "usage": "Test fine-tuned model for training purposes"
+    }
 }
 
 # Update default to Qwen (better context handling)
 #DEFAULT_MODEL_KEY = "qwen2.5-7b-q4"
 DEFAULT_MODEL_KEY = "qwen2.5-instruct-7b-q4"
+
+# ============================================================================
+# Local Fine-Tuned Models
+# ============================================================================
+
+# Directory for locally fine-tuned models (separate from downloaded models)
+FINETUNED_MODELS_DIR = "./models/custom"
+
+# Fine-tuned model registry
+# Add your fine-tuned models here after converting to GGUF
+# These take priority over base models with the same key
+FINETUNED_MODELS = {
+    # Example entry - uncomment and modify after fine-tuning:
+    # "my-finetuned-3b": {
+    #     "name": "My Fine-tuned Qwen 3B",
+    #     "filename": "output_3b_test_q4_k_m.gguf",
+    #     "description": "Fine-tuned on Dolly dataset for concise responses",
+    #     "context_length": 32768,
+    #     "base_model": "qwen2.5-3b",
+    #     "training_data": "dolly_tiny (50 examples)",
+    #     "is_finetuned": True,
+    # },
+}
+
+def get_all_models() -> dict:
+    """
+    Get combined dictionary of all models (base + fine-tuned).
+    Fine-tuned models take priority over base models with the same key.
+    """
+    combined = MODELS.copy()
+    combined.update(FINETUNED_MODELS)
+    return combined
 
 # ============================================================================
 # Generation Defaults
@@ -384,9 +427,14 @@ def get_model_path(model_key: str) -> str:
 def model_exists(model_key: str) -> bool:
     """
     Check if a model is available (either locally or via HuggingFace).
+    Checks both base models and fine-tuned models.
     """
     try:
-        get_model_source(model_key)
+        source_type, path = get_model_source(model_key)
+        # For local files, verify they exist
+        if source_type in ("local", "local_finetuned"):
+            return os.path.exists(path)
+        # HuggingFace models are assumed available
         return True
     except ValueError:
         return False
@@ -395,30 +443,39 @@ def model_exists(model_key: str) -> bool:
 def get_model_info(model_key: str) -> dict:
     """
     Get model information from registry.
-    
+    Checks fine-tuned models first, then base models.
+
     Args:
-        model_key: The model key from MODELS registry
-        
+        model_key: The model key from MODELS or FINETUNED_MODELS registry
+
     Returns:
         Model info dictionary, or None if not found
     """
+    # Check fine-tuned models first
+    if model_key in FINETUNED_MODELS:
+        return FINETUNED_MODELS.get(model_key)
     return MODELS.get(model_key)
 
 
-def list_available_models(include_missing: bool = False) -> list:
+def list_available_models(include_missing: bool = False, include_finetuned: bool = True) -> list:
     """
     List all models from registry, optionally filtering out missing files.
-    
+
     Args:
         include_missing: If False, only return models that exist on disk
-        
+        include_finetuned: If True, include fine-tuned models in the list
+
     Returns:
         List of model keys
     """
+    all_keys = list(MODELS.keys())
+    if include_finetuned:
+        all_keys.extend(FINETUNED_MODELS.keys())
+
     if include_missing:
-        return list(MODELS.keys())
+        return all_keys
     else:
-        return [key for key in MODELS.keys() if model_exists(key)]
+        return [key for key in all_keys if model_exists(key)]
 
 
 def validate_config() -> list:
@@ -457,21 +514,53 @@ def get_model_source(model_key: str) -> tuple:
     """
     Determine model source and path/identifier.
     Returns (source_type, identifier) where:
-    - source_type: "local" or "huggingface"
+    - source_type: "local", "local_finetuned", or "huggingface"
     - identifier: file path for local, repo:quant for HF
 
     Args:
-        model_key: The model key from MODELS registry
+        model_key: The model key from MODELS or FINETUNED_MODELS registry
 
     Returns:
         Tuple of (source_type, identifier)
     """
+    # Check fine-tuned models first (they take priority)
+    if model_key in FINETUNED_MODELS:
+        model_info = FINETUNED_MODELS[model_key]
+
+        # Check for local_path (absolute path)
+        if "local_path" in model_info:
+            local_path = model_info["local_path"]
+            if os.path.exists(local_path):
+                return ("local_finetuned", local_path)
+
+        # Check for filename in fine-tuned models directory
+        if "filename" in model_info:
+            local_path = os.path.join(FINETUNED_MODELS_DIR, model_info["filename"])
+            if os.path.exists(local_path):
+                return ("local_finetuned", local_path)
+
+        # File specified but doesn't exist
+        if "filename" in model_info:
+            return ("local_finetuned", os.path.join(FINETUNED_MODELS_DIR, model_info["filename"]))
+
+        raise ValueError(f"Fine-tuned model {model_key} has no valid path")
+
+    # Check base models
     if model_key not in MODELS:
         raise ValueError(f"Unknown model key: {model_key}")
 
     model_info = MODELS[model_key]
 
-    # Check for local file first
+    # Check for explicit local_path first (for fine-tuned models in MODELS dict)
+    if "local_path" in model_info:
+        local_path = model_info["local_path"]
+        source_type = "local_finetuned" if model_info.get("is_local_finetune") else "local"
+        if os.path.exists(local_path):
+            return (source_type, local_path)
+        # Path specified but doesn't exist - return it anyway for error handling
+        return (source_type, local_path)
+
+    # Check for local file in models directory
     if "filename" in model_info:
         local_path = os.path.join(MODELS_DIR, model_info["filename"])
         if os.path.exists(local_path):

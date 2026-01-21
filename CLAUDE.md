@@ -32,6 +32,8 @@ GGUF Model (CPU/GPU/Hybrid)
 - ✅ OpenAI-compatible API
 - ✅ GPU/CPU/Hybrid inference modes
 - ✅ HuggingFace model download support
+- ✅ Streaming responses (SSE token-by-token)
+- ✅ Fine-tuned model support (local GGUF files)
 
 ---
 
@@ -227,7 +229,7 @@ export N_GPU_LAYERS=-1              # -1=all, 0=cpu, N=hybrid
 
 ### server_config.py Registry
 
-**Model Definition Template**:
+**Model Definition Template** (Base Models in `MODELS`):
 ```python
 "qwen2.5-7b-q4": {
     "name": "Qwen2.5-7B-Instruct-Q4_K_M",
@@ -241,6 +243,25 @@ export N_GPU_LAYERS=-1              # -1=all, 0=cpu, N=hybrid
     "usage": "Instruction following, coding, general tasks"
 }
 ```
+
+**Fine-Tuned Model Template** (in `FINETUNED_MODELS`):
+```python
+# Fine-tuned models are stored in ./models/custom/ (FINETUNED_MODELS_DIR)
+"my-finetuned-3b": {
+    "name": "My Fine-tuned Qwen 3B",
+    "filename": "output_3b_test_q4_k_m.gguf",
+    "description": "Fine-tuned on Dolly dataset",
+    "context_length": 32768,
+    "base_model": "qwen2.5-3b",
+    "training_data": "dolly_tiny (50 examples)",
+    "is_finetuned": True,
+}
+```
+
+**Key Functions**:
+- `get_model_source(model_key)` - Returns `("local_finetuned", path)` for fine-tuned models
+- `get_all_models()` - Returns combined MODELS + FINETUNED_MODELS dictionary
+- `list_available_models(include_finetuned=True)` - Lists all available model keys
 
 **Device Configuration**:
 ```python
@@ -855,33 +876,58 @@ curl -X POST http://localhost:8080/chat \
 
 ## Integration with Fine-Tuning Workflow
 
+A complete fine-tuning toolkit has been developed and is maintained in a separate repository. The toolkit uses QLoRA (Quantized Low-Rank Adaptation) for efficient training on consumer GPUs.
+
+### Fine-Tuning Toolkit (Separate Repository)
+
+The training toolkit includes:
+- `Training_Setup.ps1` - Environment setup (handles RTX 50 series with PyTorch nightly cu128)
+- `prepare_dataset.py` - Download, inspect, filter, and convert datasets
+- `finetune.py` - QLoRA fine-tuning with configurable parameters
+- `evaluate_model.py` - Before/after comparison of model responses
+- `convert_to_gguf.py` - Convert LoRA adapters to GGUF format
+
 ### Data Pipeline for Model Training
 
 ```
 1. Use Server + Client to Generate Data
    └─ User interactions via ai_client.py
-   └─ Conversations saved with tools, tools_used
+   └─ Export via /export-ft command
 
-2. Export Training Data
-   └─ client.export_for_finetuning("data.jsonl")
-   └─ Format: {"messages": [...]}
+2. Prepare Dataset (in training repo)
+   └─ python prepare_dataset.py download --dataset dolly
+   └─ Or use custom exported data
 
-3. Prepare Dataset
-   └─ Clean, filter, deduplicate conversations
-   └─ Split train/val/test
+3. Fine-Tune Model
+   └─ python finetune.py --dataset data/training.jsonl --base-model qwen2.5-3b
+   └─ Output: LoRA adapter in output/final/
 
-4. Fine-Tune Model
-   └─ Use llama.cpp's fine-tuning script or similar
-   └─ Output: model.gguf
+4. Evaluate Results
+   └─ python evaluate_model.py --model qwen2.5-3b --lora output/final
 
-5. Integrate Back
-   └─ Register in server_config.py MODELS
+5. Convert to GGUF
+   └─ python convert_to_gguf.py --lora output/final --quantize q4_k_m
+   └─ Output: models/<name>_q4_k_m.gguf
+
+6. Integrate Back
+   └─ Copy GGUF to ./models/custom/
+   └─ Register in server_config.py FINETUNED_MODELS
    └─ Load via /model/switch
 
-6. Iterate
+7. Iterate
    └─ Generate more data with improved model
    └─ Fine-tune again
 ```
+
+### Training Time Estimates
+
+| Dataset Size | Model | GPU (RTX 5070 Ti) | CPU (56 threads) |
+|--------------|-------|-------------------|------------------|
+| 50 examples | 3B | ~20 seconds | ~1 hour |
+| 500 examples | 3B | ~3 minutes | ~6 hours |
+| 500 examples | 7B | ~10 minutes | ~12 hours |
+
+GPU training is **30-50x faster** than CPU.
 
 ### Export Format for Fine-Tuning
 
@@ -947,18 +993,19 @@ I want to...
 ## Testing Systems
 **System 1 (Custom gaming PC)**
 CPU: AMD 5800 XT (8 core)
-GPU:  Nvidia 5700 TI (16 GB VRam)
-Ram:  32 GB 
+GPU: Nvidia RTX 5070 Ti (16 GB VRAM, Blackwell/sm_120 architecture)
+RAM: 32 GB
 
 **System 2 (DL380 Gen9)**
 CPU:  Dual CPU E5-2680 v4 (28 total cores, 56 total threads)
 GPU: None (But considering purchasing a low profile card that will fit in a 2u chassis)
 Memory: 256
+Extra Tools: Docker
 
 ## Code Style
 1. We should focus on safe, reliable, guardrailed executuion first and foremost.
 2. Code should be clear, succinct, and avoid being needlessly complex, so long as the style item from 1. is adhered to.
 
-**Last Updated**: 2026-01-04
+**Last Updated**: 2026-01-13
 **Scope**: Optimized for Claude Code agentic development, architectural improvements, and extensibility.
 
