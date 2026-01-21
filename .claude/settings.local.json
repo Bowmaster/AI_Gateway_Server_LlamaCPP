@@ -9,10 +9,16 @@
       "Bash(prompt: install Python dependencies)",
       "Bash(prompt: run Python tests)",
       "Bash(prompt: start the FastAPI server)",
-      "Bash(prompt: create directory structure)"
+      "Bash(prompt: create directory structure)",
+      "WebFetch(domain:python-prompt-toolkit.readthedocs.io)",
+      "Bash(dir /b \"C:\\\\Users\\\\blutterb\\\\Documents\\\\Github\\\\Bowmaster\\\\AI_Lab_Llama.cpp\\\\EnhancedClient\")",
+      "Bash(ls:*)",
+      "Bash(dir /b \"C:\\\\Users\\\\blutterb\\\\Documents\\\\Github\\\\Bowmaster\\\\AI_Lab_Llama.cpp\\\\*.py\")"
     ],
     "additionalDirectories": [
-      "C:\\Users\\blutterb\\Documents\\Github\\Bowmaster\\Train_LLM"
+      "C:\\Users\\blutterb\\Documents\\Github\\Bowmaster\\Train_LLM",
+      "C:\\Users\\blutterb\\Documents\\Github\\Bowmaster\\AlertResponder",
+      "C:\\Users\\blutterb\\Documents\\Github\\Bowmaster\\AI_Gateway_Chat_Python"
     ]
   }
 }
