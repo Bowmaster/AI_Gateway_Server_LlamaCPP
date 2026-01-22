@@ -2,7 +2,7 @@
   "permissions": {
     "allow": [
       "Bash(./llama.cpp/llama-server.exe:*)",
-      "Bash(dir \"C:\\\\Users\\\\blutterb\\\\Documents\\\\Github\\\\Bowmaster\\\\AI_Lab_Llama.cpp\")",
+      "Bash(dir \"C:\\\\Users\\\\blutterb\\\\Documents\\\\Github\\\\Bowmaster\\\\AI_Gateway_Server_LlamaCPP\")",
       "Bash(python -m py_compile:*)",
       "Bash(python finetune.py:*)",
       "Bash(pip show:*)",
@@ -11,9 +11,9 @@
       "Bash(prompt: start the FastAPI server)",
       "Bash(prompt: create directory structure)",
       "WebFetch(domain:python-prompt-toolkit.readthedocs.io)",
-      "Bash(dir /b \"C:\\\\Users\\\\blutterb\\\\Documents\\\\Github\\\\Bowmaster\\\\AI_Lab_Llama.cpp\\\\EnhancedClient\")",
+      "Bash(dir /b \"C:\\\\Users\\\\blutterb\\\\Documents\\\\Github\\\\Bowmaster\\\\AI_Gateway_Server_LlamaCPP\\\\EnhancedClient\")",
       "Bash(ls:*)",
-      "Bash(dir /b \"C:\\\\Users\\\\blutterb\\\\Documents\\\\Github\\\\Bowmaster\\\\AI_Lab_Llama.cpp\\\\*.py\")"
+      "Bash(dir /b \"C:\\\\Users\\\\blutterb\\\\Documents\\\\Github\\\\Bowmaster\\\\AI_Gateway_Server_LlamaCPP\\\\*.py\")"
     ],
     "additionalDirectories": [
       "C:\\Users\\blutterb\\Documents\\Github\\Bowmaster\\Train_LLM",
