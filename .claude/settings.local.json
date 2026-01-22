@@ -14,11 +14,6 @@
       "Bash(dir /b \"C:\\\\Users\\\\blutterb\\\\Documents\\\\Github\\\\Bowmaster\\\\AI_Gateway_Server_LlamaCPP\\\\EnhancedClient\")",
       "Bash(ls:*)",
       "Bash(dir /b \"C:\\\\Users\\\\blutterb\\\\Documents\\\\Github\\\\Bowmaster\\\\AI_Gateway_Server_LlamaCPP\\\\*.py\")"
-    ],
-    "additionalDirectories": [
-      "C:\\Users\\blutterb\\Documents\\Github\\Bowmaster\\Train_LLM",
-      "C:\\Users\\blutterb\\Documents\\Github\\Bowmaster\\AlertResponder",
-      "C:\\Users\\blutterb\\Documents\\Github\\Bowmaster\\AI_Gateway_Chat_Python"
     ]
   }
 }
