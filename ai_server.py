@@ -8,8 +8,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import List, Dict, Optional, Any, AsyncGenerator, Union
 import logging
+import os
 import sys
 import signal
+import atexit
+import time
 import uvicorn
 import json
 import requests
@@ -66,6 +69,10 @@ class ServerState:
         self.summarized_message_count: int = 0      # Number of messages included in summary
         self.current_context_size: int = 0          # Current model's effective ctx_size
         self.current_history_tokens: int = 0        # Cached token count (updated on changes)
+
+        # Idle model unloading
+        self.last_activity_time: float = time.time()
+        self.idle_check_task: Optional[asyncio.Task] = None
 
 state = ServerState()
 
@@ -127,6 +134,10 @@ class HealthResponse(BaseModel):
     tool_tokens: int
     context_with_tools_tokens: int
     context_with_tools_percent: float
+    # Idle model unloading
+    model_idle_unloaded: bool
+    idle_timeout_seconds: int
+    idle_seconds: float
 
 class ModelInfo(BaseModel):
     key: str
@@ -186,11 +197,32 @@ class ChatApprovalRequest(BaseModel):
 from functools import wraps
 
 def require_llama_server(func):
-    """Decorator to ensure llama-server is healthy before endpoint execution"""
+    """Decorator to ensure llama-server is healthy before endpoint execution.
+
+    If the model was idle-unloaded, this will automatically reload it
+    before proceeding with the request.
+    """
     @wraps(func)
     async def wrapper(*args, **kwargs):
-        if not state.llama_manager or not state.llama_manager.is_healthy():
-            raise HTTPException(status_code=503, detail="llama-server is not running")
+        if not state.llama_manager:
+            raise HTTPException(status_code=503, detail="llama-server is not initialized")
+
+        if not state.llama_manager.is_healthy():
+            if state.llama_manager.idle_unloaded:
+                # Auto-reload: model was unloaded due to idle timeout
+                logger.info("Auto-reloading model for incoming request (was idle-unloaded)")
+                success = await asyncio.to_thread(state.llama_manager.reload_after_idle)
+                if not success:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Failed to reload model after idle unload"
+                    )
+            else:
+                raise HTTPException(status_code=503, detail="llama-server is not running")
+
+        # Update activity timestamp for idle tracking
+        state.last_activity_time = time.time()
+
         return await func(*args, **kwargs)
     return wrapper
 
@@ -518,6 +550,73 @@ async def call_llama_server_streaming(
 
 
 # ============================================================================
+# Idle Model Unloading
+# ============================================================================
+
+async def idle_check_loop():
+    """Background task that periodically checks for idle timeout and unloads the model."""
+    while True:
+        await asyncio.sleep(config.IDLE_CHECK_INTERVAL_SECONDS)
+
+        # Skip if disabled, shutting down, generating, or already unloaded
+        if config.IDLE_TIMEOUT_SECONDS <= 0:
+            continue
+        if state.shutdown_requested:
+            break
+        if state.is_generating:
+            continue
+        if not state.llama_manager or not state.llama_manager.is_running:
+            continue
+
+        idle_seconds = time.time() - state.last_activity_time
+        if idle_seconds >= config.IDLE_TIMEOUT_SECONDS:
+            idle_minutes = idle_seconds / 60
+            logger.info(f"Model idle for {idle_minutes:.1f} minutes (threshold: {config.IDLE_TIMEOUT_SECONDS / 60:.0f}m). Unloading...")
+            state.llama_manager.idle_unload()
+
+
+# ============================================================================
+# Process Cleanup (signal handlers + atexit)
+# ============================================================================
+
+_cleanup_done = False
+
+def cleanup_llama_process():
+    """Ensure llama-server process is stopped. Safe to call multiple times."""
+    global _cleanup_done
+    if _cleanup_done:
+        return
+    _cleanup_done = True
+
+    if state.llama_manager and state.llama_manager.is_running:
+        logger.info("Cleanup: stopping llama-server process tree")
+        state.llama_manager.stop()
+
+# Register atexit handler as a safety net
+atexit.register(cleanup_llama_process)
+
+
+def signal_handler(signum, frame):
+    """Handle SIGTERM/SIGINT to ensure clean process shutdown."""
+    sig_name = signal.Signals(signum).name
+    logger.info(f"Received {sig_name} - cleaning up llama-server")
+    cleanup_llama_process()
+    # Re-raise for default behavior (Uvicorn needs to see the signal too)
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+
+
+# Register signal handlers for clean shutdown
+# Only set handlers in the main process (not in Uvicorn workers)
+try:
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+except (OSError, ValueError):
+    # May fail if not on main thread (e.g., during testing)
+    pass
+
+
+# ============================================================================
 # Startup/Shutdown
 # ============================================================================
 
@@ -615,6 +714,16 @@ async def startup_event():
             logger.error(f"Error during llama-server startup: {e}")
             logger.error("Server will start but chat will not work")
 
+    # Start idle check background task
+    if config.IDLE_TIMEOUT_SECONDS > 0:
+        state.idle_check_task = asyncio.create_task(idle_check_loop())
+        logger.info(f"Idle model unloading enabled: {config.IDLE_TIMEOUT_SECONDS / 60:.0f} minute timeout")
+    else:
+        logger.info("Idle model unloading disabled")
+
+    # Set initial activity time
+    state.last_activity_time = time.time()
+
     logger.info("=" * 60)
     logger.info(f"AI Lab Server ready on {config.HOST}:{config.PORT}")
     logger.info("=" * 60)
@@ -623,10 +732,18 @@ async def startup_event():
 async def shutdown_event():
     """Cleanup on shutdown"""
     logger.info("Shutting down AI Lab Server...")
-    
-    if state.llama_manager:
-        state.llama_manager.stop()
-    
+
+    # Cancel idle check task
+    if state.idle_check_task and not state.idle_check_task.done():
+        state.idle_check_task.cancel()
+        try:
+            await state.idle_check_task
+        except asyncio.CancelledError:
+            pass
+
+    # Stop llama-server process tree
+    cleanup_llama_process()
+
     logger.info("Shutdown complete")
 
 # ============================================================================
@@ -640,6 +757,16 @@ async def health_check():
     model_name = model_info["name"] if model_info else "Unknown"
 
     is_loaded = state.llama_manager and state.llama_manager.is_healthy()
+    is_idle_unloaded = state.llama_manager.idle_unloaded if state.llama_manager else False
+    idle_seconds = time.time() - state.last_activity_time
+
+    # Determine status string
+    if is_loaded:
+        health_status = "ok"
+    elif is_idle_unloaded:
+        health_status = "idle"
+    else:
+        health_status = "degraded"
 
     # Calculate context usage with tiktoken
     ctx_size = state.current_context_size or config.LLAMA_SERVER_CONFIG.get('ctx_size', 12288)
@@ -671,7 +798,7 @@ async def health_check():
     context_with_tools_percent = (context_with_tools / ctx_size) * 100 if ctx_size > 0 else 0
 
     return HealthResponse(
-        status="ok" if is_loaded else "degraded",
+        status=health_status,
         model_loaded=is_loaded,
         device=get_device_string(),
         model_name=model_name,
@@ -690,7 +817,11 @@ async def health_check():
         # Context with tools
         tool_tokens=tool_tokens,
         context_with_tools_tokens=context_with_tools,
-        context_with_tools_percent=round(context_with_tools_percent, 1)
+        context_with_tools_percent=round(context_with_tools_percent, 1),
+        # Idle model unloading
+        model_idle_unloaded=is_idle_unloaded,
+        idle_timeout_seconds=config.IDLE_TIMEOUT_SECONDS,
+        idle_seconds=round(idle_seconds, 1)
     )
 
 @app.get("/models", response_model=ModelsListResponse)
@@ -814,7 +945,6 @@ async def chat(request: ChatRequest):
     
     try:
         state.is_generating = True
-        import time
         start_time = time.time()
 
         # Update conversation history from request
@@ -1060,7 +1190,6 @@ async def approve_tools(approval_request: ChatApprovalRequest):
 
     try:
         state.is_generating = True
-        import time
         start_time = time.time()
 
         # Restore saved state
@@ -1284,7 +1413,6 @@ async def chat_stream(request: ChatRequest):
     tools_enabled = request.enable_tools if request.enable_tools is not None else state.tools_enabled
 
     async def generate_stream() -> AsyncGenerator[str, None]:
-        import time
         start_time = time.time()
 
         try:
@@ -1514,6 +1642,32 @@ async def execute_command(request: CommandRequest):
             current_value=mem_info
         )
     
+    # Idle timeout command
+    elif command == "idle":
+        if request.value is None:
+            idle_seconds = time.time() - state.last_activity_time
+            is_unloaded = state.llama_manager.idle_unloaded if state.llama_manager else False
+            status_str = "unloaded (idle)" if is_unloaded else "loaded"
+            return CommandResponse(
+                status="ok",
+                message=f"Model {status_str}. Idle: {idle_seconds:.0f}s. Timeout: {config.IDLE_TIMEOUT_SECONDS}s ({config.IDLE_TIMEOUT_SECONDS / 60:.0f}m)",
+                current_value=str(config.IDLE_TIMEOUT_SECONDS)
+            )
+        else:
+            try:
+                new_timeout = int(request.value)
+                if new_timeout < 0:
+                    raise ValueError("Timeout must be >= 0")
+                config.IDLE_TIMEOUT_SECONDS = new_timeout
+                msg = f"Idle timeout set to {new_timeout}s ({new_timeout / 60:.0f}m)" if new_timeout > 0 else "Idle unloading disabled"
+                return CommandResponse(
+                    status="ok",
+                    message=msg,
+                    current_value=str(new_timeout)
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=f"Invalid value: {e}. Use seconds (e.g., '900' for 15 minutes, '0' to disable)")
+
     # Tools command
     elif command == "tools":
         if request.value is None:
