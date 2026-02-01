@@ -12,6 +12,10 @@
 .PARAMETER Port
     Override the default server port (default: 8080)
 
+.PARAMETER Firewall
+    If specified, creates a Windows Firewall inbound rule to allow remote
+    access to the server. Requires elevated (admin) privileges.
+
 .EXAMPLE
     .\setup.ps1
     # Sets up the environment only
@@ -23,10 +27,15 @@
 .EXAMPLE
     .\setup.ps1 -StartServer -Port 9000
     # Sets up and starts the server on port 9000
+
+.EXAMPLE
+    .\setup.ps1 -Firewall
+    # Sets up the environment and creates a firewall rule for remote access
 #>
 
 param(
     [switch]$StartServer,
+    [switch]$Firewall,
     [int]$Port = 8080
 )
 
@@ -43,7 +52,7 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptDir
 
 # Check Python installation
-Write-Host "[1/5] Checking Python installation..." -ForegroundColor Yellow
+Write-Host "[1/7] Checking Python installation..." -ForegroundColor Yellow
 $PythonCmd = $null
 
 # Try different Python commands
@@ -72,7 +81,7 @@ if (-not $PythonCmd) {
 
 # Check for NVIDIA GPU
 Write-Host ""
-Write-Host "[2/5] Checking for NVIDIA GPU..." -ForegroundColor Yellow
+Write-Host "[2/7] Checking for NVIDIA GPU..." -ForegroundColor Yellow
 $HasGPU = $false
 
 try {
@@ -93,10 +102,52 @@ try {
     Write-Host "  No NVIDIA GPU detected (CPU-only mode)" -ForegroundColor Yellow
 }
 
+# Check for Visual C++ Redistributable (required by llama-server.exe)
+Write-Host ""
+Write-Host "[3/7] Checking Visual C++ Redistributable..." -ForegroundColor Yellow
+
+$VCRedistInstalled = $false
+$VCRegPaths = @(
+    "HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\X64",
+    "HKLM:\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\X64"
+)
+
+foreach ($regPath in $VCRegPaths) {
+    if (Test-Path $regPath) {
+        $VCRedistInstalled = $true
+        break
+    }
+}
+
+if ($VCRedistInstalled) {
+    Write-Host "  Visual C++ Redistributable found" -ForegroundColor Green
+} else {
+    Write-Host "  Visual C++ Redistributable (x64) NOT found!" -ForegroundColor Red
+    Write-Host "  llama-server.exe requires this runtime and will crash without it." -ForegroundColor Yellow
+    Write-Host "  Download from: https://aka.ms/vs/17/release/vc_redist.x64.exe" -ForegroundColor Cyan
+    Write-Host ""
+
+    $installChoice = Read-Host "  Would you like to download and install it now? (Y/N)"
+    if ($installChoice -eq 'Y' -or $installChoice -eq 'y') {
+        Write-Host "  Downloading VC++ Redistributable..." -ForegroundColor Yellow
+        $vcRedistPath = Join-Path $ScriptDir "vc_redist.x64.exe"
+        try {
+            Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile $vcRedistPath
+            Write-Host "  Installing (may require admin privileges)..." -ForegroundColor Yellow
+            Start-Process -FilePath $vcRedistPath -ArgumentList "/install", "/quiet", "/norestart" -Wait
+            Write-Host "  Visual C++ Redistributable installed" -ForegroundColor Green
+            Remove-Item $vcRedistPath -ErrorAction SilentlyContinue
+        } catch {
+            Write-Host "  Failed to download/install automatically." -ForegroundColor Red
+            Write-Host "  Please install manually from the URL above." -ForegroundColor Yellow
+        }
+    }
+}
+
 # Create virtual environment
 $VenvPath = Join-Path $ScriptDir "venv"
 Write-Host ""
-Write-Host "[3/5] Setting up virtual environment..." -ForegroundColor Yellow
+Write-Host "[4/7] Setting up virtual environment..." -ForegroundColor Yellow
 
 if (Test-Path $VenvPath) {
     Write-Host "  Virtual environment already exists at: $VenvPath" -ForegroundColor Green
@@ -112,7 +163,7 @@ if (Test-Path $VenvPath) {
 
 # Activate virtual environment
 Write-Host ""
-Write-Host "[4/5] Activating and installing dependencies..." -ForegroundColor Yellow
+Write-Host "[5/7] Activating and installing dependencies..." -ForegroundColor Yellow
 $ActivateScript = Join-Path $VenvPath "Scripts\Activate.ps1"
 
 if (-not (Test-Path $ActivateScript)) {
@@ -146,7 +197,7 @@ if (Test-Path $RequirementsPath) {
 
 # Hardware detection
 Write-Host ""
-Write-Host "[5/5] Detecting hardware configuration..." -ForegroundColor Yellow
+Write-Host "[6/7] Detecting hardware configuration..." -ForegroundColor Yellow
 
 $HardwareDetector = Join-Path $ScriptDir "hardware_detector.py"
 if (Test-Path $HardwareDetector) {
@@ -180,8 +231,7 @@ if (Test-Path $HardwareDetector) {
 
 # Check for llama-server
 Write-Host ""
-Write-Host "======================================" -ForegroundColor Cyan
-Write-Host "  Checking llama-server" -ForegroundColor Cyan
+Write-Host "[7/7] Checking llama-server" -ForegroundColor Cyan
 Write-Host "======================================" -ForegroundColor Cyan
 
 $LlamaServer = Join-Path $ScriptDir "llama-server.exe"
@@ -207,6 +257,32 @@ if (Test-Path $ModelsDir) {
     }
 } else {
     Write-Host "  models/ directory not found" -ForegroundColor Yellow
+}
+
+# Firewall rule (opt-in only)
+if ($Firewall) {
+    Write-Host ""
+    Write-Host "Configuring Windows Firewall..." -ForegroundColor Yellow
+
+    $ruleName = "AI Lab Server (TCP $Port)"
+    $existingRule = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
+
+    if ($existingRule) {
+        Write-Host "  Firewall rule '$ruleName' already exists" -ForegroundColor Green
+    } else {
+        try {
+            New-NetFirewallRule -DisplayName $ruleName `
+                -Direction Inbound `
+                -LocalPort $Port `
+                -Protocol TCP `
+                -Action Allow `
+                -Description "Allow remote access to AI Lab Server API" | Out-Null
+            Write-Host "  Created inbound rule: $ruleName" -ForegroundColor Green
+        } catch {
+            Write-Host "  ERROR: Failed to create firewall rule." -ForegroundColor Red
+            Write-Host "  Re-run setup as Administrator: .\setup.ps1 -Firewall" -ForegroundColor Yellow
+        }
+    }
 }
 
 # Setup complete

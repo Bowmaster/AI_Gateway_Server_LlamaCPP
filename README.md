@@ -18,6 +18,7 @@ llama-server.exe (Native inference, port 8081)
 
 Make sure you have:
 - Python 3.9+
+- [Visual C++ Redistributable 2015-2022 (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe) - required by llama-server.exe
 - llama-server.exe in the project directory
 - At least one GGUF model in the `models/` directory
 
@@ -107,6 +108,22 @@ Available commands:
 - `mem` - Memory usage
 - `tools` - Enable/disable tool calling
 
+## Remote Access
+
+The server binds to `0.0.0.0:8080` by default, accepting connections on all interfaces. However, Windows Firewall blocks inbound connections unless a rule is created.
+
+**Option 1** - Via setup script (requires admin):
+```powershell
+.\setup.ps1 -Firewall
+```
+
+**Option 2** - Manual (requires admin):
+```powershell
+New-NetFirewallRule -DisplayName "AI Lab Server" -Direction Inbound -LocalPort 8080 -Protocol TCP -Action Allow
+```
+
+Only port 8080 (FastAPI) needs to be exposed. Port 8081 (llama-server) is bound to `127.0.0.1` and should remain internal only.
+
 ## Configuration Modes
 
 ### GPU Mode (Default)
@@ -167,6 +184,7 @@ Available commands:
 - Check `llama-server.exe` exists
 - Check default model exists in `models/`
 - Check port 8080 and 8081 are available
+- Ensure [Visual C++ Redistributable 2015-2022 (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe) is installed - llama-server.exe will crash silently (exit code `0xC0000005`) without it, especially on fresh server OS installations
 
 **Model won't load:**
 - Verify GGUF file exists

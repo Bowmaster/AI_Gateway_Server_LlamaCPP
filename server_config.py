@@ -216,6 +216,17 @@ MODELS = {
         "usage": "General purpose: Chat, reasoning, writing, instruction following",
     },
 
+    "qwen3-next-instruct-80b-a3b-q8": {
+        "name": "Qwen3-Next-80B-A3B-Instruct Q8_0",
+        "description": "Qwen 3 Next Instruct High Performance model",
+        "hf_repo": "Qwen/Qwen3-Next-80B-A3B-Instruct-GGUF:Q8_0",
+        "context_length": 32768,
+        "vram_estimate": "N/A",
+        "recommended": False,
+        "download_url": "https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct-GGUF",
+        "usage": "High RAM Server only, use for high-powered, long-running tasks that can perform slower.",
+    },
+
     "llama3.2-3b-q4": {
         "name": "Llama-3.2-3B-Instruct Q4_K_M",
         "description": "Meta's Llama 3.2 3B: Small, fast model for testing",

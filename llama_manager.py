@@ -166,7 +166,20 @@ class LlamaServerManager:
             try:
                 # Check if process is still running
                 if self.process and self.process.poll() is not None:
-                    logger.error("llama-server process terminated unexpectedly")
+                    exit_code = self.process.returncode
+                    logger.error(f"llama-server process terminated unexpectedly (exit code: {exit_code})")
+                    # Capture any remaining stdout/stderr for diagnostics
+                    try:
+                        stdout_remaining = self.process.stdout.read() if self.process.stdout else ""
+                        stderr_remaining = self.process.stderr.read() if self.process.stderr else ""
+                        if stdout_remaining and stdout_remaining.strip():
+                            logger.error(f"llama-server stdout:\n{stdout_remaining.strip()}")
+                        if stderr_remaining and stderr_remaining.strip():
+                            logger.error(f"llama-server stderr:\n{stderr_remaining.strip()}")
+                        if not stdout_remaining.strip() and not stderr_remaining.strip():
+                            logger.error("No output captured from llama-server - process may have crashed before producing output")
+                    except Exception as e:
+                        logger.error(f"Could not read llama-server output: {e}")
                     return False
                 
                 # Try to connect to health endpoint
