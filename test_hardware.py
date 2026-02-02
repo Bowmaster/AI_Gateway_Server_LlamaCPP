@@ -81,6 +81,12 @@ MOCK_SYSTEM2_RAM = {
     "detection_method": "mock"
 }
 
+MOCK_SYSTEM2_NUMA = {
+    "numa_nodes": 2,
+    "is_multi_socket": True,
+    "detection_method": "mock"
+}
+
 
 # ============================================================================
 # Test Functions
@@ -184,7 +190,8 @@ def test_config_generation_system2():
     hardware_info = {
         "gpu": MOCK_SYSTEM2_GPU,
         "cpu": MOCK_SYSTEM2_CPU,
-        "memory": MOCK_SYSTEM2_RAM
+        "memory": MOCK_SYSTEM2_RAM,
+        "numa": MOCK_SYSTEM2_NUMA,
     }
 
     config = hardware_detector.generate_optimal_config(hardware_info)
@@ -195,12 +202,27 @@ def test_config_generation_system2():
     print(f"  Threads: {config.get('threads', 'None')}")
     print(f"  Reasoning: {config['reasoning']}")
 
+    cpu_opt = config.get('cpu_optimization', {})
+    print(f"  CPU Optimization:")
+    print(f"    NUMA: {cpu_opt.get('numa_mode')}")
+    print(f"    Batch Size: {cpu_opt.get('batch_size')}")
+    print(f"    UBatch Size: {cpu_opt.get('ubatch_size')}")
+    print(f"    Memory Lock: {cpu_opt.get('mlock')}")
+
     # Verify System 2 config expectations
     assert config['n_gpu_layers'] == 0, "System 2 should use CPU-only mode"
-    assert config['ctx_size'] >= 65536, "System 2 should have massive context window"
+    assert config['ctx_size'] == 8192, "System 2 should use conservative 8K context for CPU speed"
     assert config['threads'] is not None, "System 2 should specify thread count"
-    assert config['threads'] >= 50, "System 2 should use most of 56 threads"
+    # With 28 physical cores - 2 = 26 threads (not logical 56)
+    assert config['threads'] == 26, f"System 2 should use 26 threads (physical_cores - 2), got {config['threads']}"
     assert config['mode'] == "cpu_highram", "System 2 should be cpu_highram mode"
+
+    # Verify CPU optimization dict
+    assert 'cpu_optimization' in config, "System 2 should have cpu_optimization"
+    assert cpu_opt.get('numa_mode') == "distribute", "System 2 (dual Xeon) should use NUMA distribute"
+    assert cpu_opt.get('batch_size') == 512, "Batch size should be 512"
+    assert cpu_opt.get('ubatch_size') == 512, "UBatch size should be 512"
+    assert cpu_opt.get('mlock') == True, "System 2 (256GB) should enable mlock"
 
     print("✓ System 2 config generation passed")
     return config
@@ -220,15 +242,20 @@ def test_context_calculation():
     print(f"GPU 8GB VRAM: {ctx_gpu_8gb} tokens")
     assert ctx_gpu_8gb >= 8192, "8GB VRAM should support medium context"
 
-    # Test CPU mode with 256GB RAM
+    # Test CPU mode with 256GB RAM (conservative for speed)
     ctx_cpu_256gb = hardware_detector.calculate_optimal_context(ram_gb=256.0, mode="cpu")
     print(f"CPU 256GB RAM: {ctx_cpu_256gb} tokens")
-    assert ctx_cpu_256gb >= 65536, "256GB RAM should support massive context"
+    assert ctx_cpu_256gb == 8192, "CPU mode should use conservative 8K context for speed optimization"
 
-    # Test CPU mode with 32GB RAM
+    # Test CPU mode with 32GB RAM (conservative for speed)
     ctx_cpu_32gb = hardware_detector.calculate_optimal_context(ram_gb=32.0, mode="cpu")
     print(f"CPU 32GB RAM: {ctx_cpu_32gb} tokens")
-    assert ctx_cpu_32gb >= 8192, "32GB RAM should support medium context"
+    assert ctx_cpu_32gb == 8192, "CPU mode with 32GB should use 8K context"
+
+    # Test CPU mode with low RAM
+    ctx_cpu_12gb = hardware_detector.calculate_optimal_context(ram_gb=12.0, mode="cpu")
+    print(f"CPU 12GB RAM: {ctx_cpu_12gb} tokens")
+    assert ctx_cpu_12gb == 4096, "CPU mode with <16GB should use 4K context"
 
     print("✓ Context calculation passed")
 
@@ -311,6 +338,39 @@ def test_system_classification():
     print("✓ System classification passed")
 
 
+def test_numa_detection():
+    """Test NUMA topology detection with mock data"""
+    print("\n=== Test: NUMA Detection ===")
+
+    # Test with dual-socket Xeon (System 2 mock data)
+    numa_result = hardware_detector.detect_numa_topology(MOCK_SYSTEM2_CPU)
+    print(f"System 2 (Xeon E5-2680 v4): {numa_result}")
+
+    # System 2 has 28 physical cores and 'E5-' in name — heuristic should detect multi-socket
+    # (unless running on the actual system with wmic/sysfs available)
+    if numa_result['detection_method'] == 'heuristic':
+        assert numa_result['is_multi_socket'] == True, "Xeon E5 with 28 cores should be detected as multi-socket"
+        assert numa_result['numa_nodes'] >= 2, "Should detect at least 2 NUMA nodes"
+    # If running on actual hardware, wmic/sysfs detection takes precedence — just verify structure
+    assert 'numa_nodes' in numa_result
+    assert 'is_multi_socket' in numa_result
+    assert 'detection_method' in numa_result
+    print(f"  NUMA nodes: {numa_result['numa_nodes']}, multi-socket: {numa_result['is_multi_socket']}")
+
+    # Test with desktop CPU (System 1 mock data) — should be single socket
+    numa_desktop = hardware_detector.detect_numa_topology(MOCK_SYSTEM1_CPU)
+    print(f"System 1 (Ryzen 7 5800X): {numa_desktop}")
+
+    if numa_desktop['detection_method'] in ('heuristic', 'default'):
+        assert numa_desktop['is_multi_socket'] == False, "Desktop Ryzen should not be multi-socket"
+        assert numa_desktop['numa_nodes'] == 1, "Desktop should have 1 NUMA node"
+    assert 'numa_nodes' in numa_desktop
+    assert 'is_multi_socket' in numa_desktop
+    print(f"  NUMA nodes: {numa_desktop['numa_nodes']}, multi-socket: {numa_desktop['is_multi_socket']}")
+
+    print("✓ NUMA detection passed")
+
+
 def test_full_detection_flow():
     """Test complete detection and save flow"""
     print("\n=== Test: Full Detection Flow ===")
@@ -363,6 +423,7 @@ def run_all_tests():
         ("GPU Detection", test_gpu_detection),
         ("CPU Detection", test_cpu_detection),
         ("Memory Detection", test_memory_detection),
+        ("NUMA Detection", test_numa_detection),
         ("Context Calculation", test_context_calculation),
         ("Config Generation (System 1)", test_config_generation_system1),
         ("Config Generation (System 2)", test_config_generation_system2),

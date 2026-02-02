@@ -95,6 +95,16 @@ class LlamaServerManager:
         if self.config.get('threads'):
             cmd.extend(["--threads", str(self.config['threads'])])
 
+        # CPU optimization flags (only meaningful for CPU/hybrid modes)
+        if self.config.get('numa_mode'):
+            cmd.extend(["--numa", str(self.config['numa_mode'])])
+        if self.config.get('batch_size'):
+            cmd.extend(["--batch-size", str(self.config['batch_size'])])
+        if self.config.get('ubatch_size'):
+            cmd.extend(["--ubatch-size", str(self.config['ubatch_size'])])
+        if self.config.get('mlock'):
+            cmd.append("--mlock")
+
         # Add any additional args from config
         if self.config.get('additional_args'):
             cmd.extend(self.config['additional_args'])
@@ -104,6 +114,14 @@ class LlamaServerManager:
         logger.info(f"  GPU Layers: {self.config.get('n_gpu_layers', -1)}")
         logger.info(f"  Context Size: {effective_ctx_size} tokens")
         logger.info(f"  CPU Threads: {self.config.get('threads', 'auto')}")
+        if self.config.get('numa_mode'):
+            logger.info(f"  NUMA Mode: {self.config['numa_mode']}")
+        if self.config.get('batch_size'):
+            logger.info(f"  Batch Size: {self.config['batch_size']}")
+        if self.config.get('ubatch_size'):
+            logger.info(f"  UBatch Size: {self.config['ubatch_size']}")
+        if self.config.get('mlock'):
+            logger.info(f"  Memory Lock: enabled")
 
         logger.info(f"Starting llama-server with command: {' '.join(cmd)}")
         

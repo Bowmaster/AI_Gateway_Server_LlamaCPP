@@ -654,6 +654,15 @@ async def startup_event():
     logger.info(f"  GPU Layers: {config.LLAMA_SERVER_CONFIG['n_gpu_layers']}")
     logger.info(f"  Context Size: {config.LLAMA_SERVER_CONFIG['ctx_size']} tokens")
     logger.info(f"  CPU Threads: {config.LLAMA_SERVER_CONFIG['threads'] or 'auto'}")
+    # CPU optimization flags
+    if config.LLAMA_SERVER_CONFIG.get('numa_mode'):
+        logger.info(f"  NUMA Mode: {config.LLAMA_SERVER_CONFIG['numa_mode']}")
+    if config.LLAMA_SERVER_CONFIG.get('batch_size'):
+        logger.info(f"  Batch Size: {config.LLAMA_SERVER_CONFIG['batch_size']}")
+    if config.LLAMA_SERVER_CONFIG.get('ubatch_size'):
+        logger.info(f"  UBatch Size: {config.LLAMA_SERVER_CONFIG['ubatch_size']}")
+    if config.LLAMA_SERVER_CONFIG.get('mlock'):
+        logger.info(f"  Memory Lock: enabled")
     logger.info("=" * 60)
 
     # Validate configuration
@@ -1705,6 +1714,10 @@ async def get_hardware_info():
             "n_gpu_layers": config.LLAMA_SERVER_CONFIG["n_gpu_layers"],
             "ctx_size": config.LLAMA_SERVER_CONFIG["ctx_size"],
             "threads": config.LLAMA_SERVER_CONFIG["threads"],
+            "numa_mode": config.LLAMA_SERVER_CONFIG.get("numa_mode"),
+            "batch_size": config.LLAMA_SERVER_CONFIG.get("batch_size"),
+            "ubatch_size": config.LLAMA_SERVER_CONFIG.get("ubatch_size"),
+            "mlock": config.LLAMA_SERVER_CONFIG.get("mlock", False),
         },
         device_string=get_device_string()
     )

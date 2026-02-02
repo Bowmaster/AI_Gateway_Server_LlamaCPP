@@ -115,6 +115,34 @@ def get_runtime_config() -> Tuple[Dict[str, Any], Dict[str, Any]]:
         env_overrides["threads"] = int(os.getenv("THREADS"))
         logger.info(f"Environment override: THREADS={env_overrides['threads']}")
 
+    # CPU optimization env var overrides
+    if os.getenv("NUMA_MODE"):
+        val = os.getenv("NUMA_MODE").lower()
+        # Allow "none"/"off" to explicitly disable
+        cpu_opt = config.get("cpu_optimization", {})
+        cpu_opt["numa_mode"] = None if val in ("none", "off", "") else val
+        config["cpu_optimization"] = cpu_opt
+        logger.info(f"Environment override: NUMA_MODE={val}")
+
+    if os.getenv("BATCH_SIZE"):
+        cpu_opt = config.get("cpu_optimization", {})
+        cpu_opt["batch_size"] = int(os.getenv("BATCH_SIZE"))
+        config["cpu_optimization"] = cpu_opt
+        logger.info(f"Environment override: BATCH_SIZE={cpu_opt['batch_size']}")
+
+    if os.getenv("UBATCH_SIZE"):
+        cpu_opt = config.get("cpu_optimization", {})
+        cpu_opt["ubatch_size"] = int(os.getenv("UBATCH_SIZE"))
+        config["cpu_optimization"] = cpu_opt
+        logger.info(f"Environment override: UBATCH_SIZE={cpu_opt['ubatch_size']}")
+
+    if os.getenv("MLOCK"):
+        val = os.getenv("MLOCK").lower()
+        cpu_opt = config.get("cpu_optimization", {})
+        cpu_opt["mlock"] = val in ("1", "true", "on", "yes")
+        config["cpu_optimization"] = cpu_opt
+        logger.info(f"Environment override: MLOCK={cpu_opt['mlock']}")
+
     config.update(env_overrides)
 
     # Ensure required keys exist with fallback defaults
@@ -131,6 +159,9 @@ def get_runtime_config() -> Tuple[Dict[str, Any], Dict[str, Any]]:
 
 # Load runtime configuration based on detected hardware
 _runtime_config, _hardware_profile = get_runtime_config()
+
+# Extract CPU optimization settings (only present for CPU modes)
+_cpu_opt = _runtime_config.get("cpu_optimization", {})
 
 LLAMA_SERVER_CONFIG = {
     # Path to llama-server executable
@@ -149,6 +180,13 @@ LLAMA_SERVER_CONFIG = {
     "n_gpu_layers": _runtime_config["n_gpu_layers"],
     "ctx_size": _runtime_config["ctx_size"],
     "threads": _runtime_config.get("threads"),
+
+    # CPU optimization flags (auto-configured, only active for CPU modes)
+    # Override with: NUMA_MODE, BATCH_SIZE, UBATCH_SIZE, MLOCK
+    "numa_mode": _cpu_opt.get("numa_mode"),       # e.g. "distribute" for multi-socket
+    "batch_size": _cpu_opt.get("batch_size"),       # prompt processing batch size
+    "ubatch_size": _cpu_opt.get("ubatch_size"),     # micro-batch size
+    "mlock": _cpu_opt.get("mlock", False),          # lock model in RAM (prevents paging)
 
     # Auto-start llama-server when Python server starts
     "auto_start": True,
