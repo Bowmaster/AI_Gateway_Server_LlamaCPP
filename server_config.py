@@ -397,6 +397,18 @@ def get_system_prompt_for_model(model_key: str) -> str:
     return MODEL_SPECIFIC_PROMPTS.get(model_key, DEFAULT_SYSTEM_PROMPT)
 
 # ============================================================================
+# Idle Model Unloading
+# ============================================================================
+
+# Automatically stop llama-server after this many seconds of inactivity
+# to free system resources (GPU VRAM, RAM). The model reloads on next request.
+# Set to 0 to disable idle unloading.
+IDLE_TIMEOUT_SECONDS = int(os.getenv("IDLE_TIMEOUT_SECONDS", "900"))  # 15 minutes
+
+# How often (in seconds) the background task checks for idle timeout
+IDLE_CHECK_INTERVAL_SECONDS = 60
+
+# ============================================================================
 # Streaming Configuration
 # ============================================================================
 

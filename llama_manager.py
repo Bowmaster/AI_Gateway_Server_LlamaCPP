@@ -17,16 +17,22 @@ logger = logging.getLogger(__name__)
 
 class LlamaServerManager:
     """Manages the llama-server subprocess lifecycle with HuggingFace download support"""
-    
+
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.process: Optional[subprocess.Popen] = None
         self.server_url = f"http://{config['host']}:{config['port']}"
         self.is_running = False
-        
+
         # Set up cache directory for HuggingFace downloads
         self.cache_dir = Path(config.get('cache_dir', './models'))
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+        # Track last loaded model for idle reload
+        self.last_model_identifier: Optional[str] = None
+        self.last_use_hf: bool = False
+        self.last_ctx_size: Optional[int] = None
+        self.idle_unloaded: bool = False
         
     def start(self, model_path_or_hf: str, use_hf: bool = False, ctx_size: Optional[int] = None) -> bool:
         """
@@ -43,6 +49,11 @@ class LlamaServerManager:
         if self.is_running:
             logger.warning("llama-server is already running")
             return True
+
+        # Remember model parameters for potential idle reload
+        self.last_model_identifier = model_path_or_hf
+        self.last_use_hf = use_hf
+        self.last_ctx_size = ctx_size
 
         # Validate executable exists
         executable = self.config['executable']
@@ -215,44 +226,93 @@ class LlamaServerManager:
         logger.error(f"llama-server did not become ready within {timeout} seconds")
         return False
     
+    def _kill_process_tree(self, pid: int) -> None:
+        """
+        Kill a process and all its children using psutil.
+
+        This prevents orphaned llama-server child processes from lingering
+        after the parent is stopped.
+
+        Args:
+            pid: Process ID of the root process to kill
+        """
+        try:
+            parent = psutil.Process(pid)
+            children = parent.children(recursive=True)
+
+            # Terminate children first, then parent
+            for child in children:
+                try:
+                    logger.debug(f"Terminating child process {child.pid} ({child.name()})")
+                    child.terminate()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+
+            # Terminate parent
+            try:
+                parent.terminate()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+            # Wait for all to exit (parent + children)
+            gone, alive = psutil.wait_procs(children + [parent], timeout=10)
+
+            # Force kill any survivors
+            for proc in alive:
+                try:
+                    logger.warning(f"Force killing process {proc.pid} ({proc.name()})")
+                    proc.kill()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+
+            if alive:
+                # Final wait after force kill
+                psutil.wait_procs(alive, timeout=5)
+
+        except psutil.NoSuchProcess:
+            logger.debug(f"Process {pid} already exited")
+        except Exception as e:
+            logger.error(f"Error killing process tree for PID {pid}: {e}")
+
     def stop(self) -> bool:
         """
-        Stop the llama-server process gracefully.
-        
+        Stop the llama-server process gracefully, killing the entire process tree.
+
         Returns:
             True if stopped successfully, False otherwise
         """
         if not self.process:
             logger.warning("No llama-server process to stop")
             return True
-        
-        logger.info(f"Stopping llama-server (PID: {self.process.pid})")
-        
+
+        pid = self.process.pid
+        logger.info(f"Stopping llama-server (PID: {pid})")
+
         try:
-            # Try graceful shutdown first
-            if os.name == 'nt':
-                # Windows: Send CTRL_BREAK_EVENT
-                self.process.send_signal(signal.CTRL_BREAK_EVENT)
-            else:
-                # Unix: Send SIGTERM
-                self.process.terminate()
-            
-            # Wait for process to exit
+            # Use process tree killing for thorough cleanup
+            self._kill_process_tree(pid)
+
+            # Clean up the Popen object
             try:
-                self.process.wait(timeout=10)
-                logger.info("llama-server stopped gracefully")
-            except subprocess.TimeoutExpired:
-                # Force kill if it doesn't exit
-                logger.warning("llama-server did not stop gracefully, force killing")
-                self.process.kill()
-                self.process.wait(timeout=5)
-            
+                self.process.wait(timeout=2)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+
             self.is_running = False
             self.process = None
+            logger.info("llama-server stopped successfully")
             return True
-            
+
         except Exception as e:
             logger.error(f"Error stopping llama-server: {e}")
+            # Last resort: try direct kill on the Popen object
+            try:
+                self.process.kill()
+                self.process.wait(timeout=5)
+            except Exception:
+                pass
+            self.is_running = False
+            self.process = None
             return False
     
     def restart(self, model_path_or_hf: str, use_hf: bool = False, ctx_size: Optional[int] = None) -> bool:
@@ -278,6 +338,58 @@ class LlamaServerManager:
 
         return self.start(model_path_or_hf, use_hf=use_hf, ctx_size=ctx_size)
     
+    def idle_unload(self) -> bool:
+        """
+        Stop llama-server due to idle timeout, preserving model info for reload.
+
+        Unlike stop(), this sets the idle_unloaded flag so the server knows
+        it can automatically reload when the next request arrives.
+
+        Returns:
+            True if unloaded successfully, False otherwise
+        """
+        if not self.is_running:
+            return True
+
+        logger.info("Idle timeout reached - unloading model to free resources")
+        result = self.stop()
+        if result:
+            self.idle_unloaded = True
+            logger.info(f"Model unloaded. Will reload '{self.last_model_identifier}' on next request.")
+        return result
+
+    def reload_after_idle(self) -> bool:
+        """
+        Reload the last model after an idle unload.
+
+        Returns:
+            True if reloaded successfully, False otherwise
+        """
+        if self.is_running:
+            logger.warning("llama-server is already running, no reload needed")
+            self.idle_unloaded = False
+            return True
+
+        if not self.last_model_identifier:
+            logger.error("Cannot reload: no previous model information stored")
+            self.idle_unloaded = False
+            return False
+
+        logger.info(f"Reloading model after idle unload: {self.last_model_identifier}")
+        result = self.start(
+            self.last_model_identifier,
+            use_hf=self.last_use_hf,
+            ctx_size=self.last_ctx_size
+        )
+
+        if result:
+            self.idle_unloaded = False
+            logger.info("Model reloaded successfully after idle unload")
+        else:
+            logger.error("Failed to reload model after idle unload")
+
+        return result
+
     def is_healthy(self) -> bool:
         """
         Check if llama-server is running and responsive.
@@ -334,3 +446,4 @@ class LlamaServerManager:
         if self.is_running:
             logger.info("LlamaServerManager cleanup: stopping llama-server")
             self.stop()
+        self.idle_unloaded = False
