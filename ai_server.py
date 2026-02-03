@@ -1582,9 +1582,13 @@ async def chat_stream(request: ChatRequest):
                             chunk_data = json.loads(event[6:].strip())
 
                             # Accumulate content from deltas
-                            delta = chunk_data.get("choices", [{}])[0].get("delta", {})
-                            if "content" in delta and delta["content"] is not None:
-                                accumulated_content += delta["content"]
+                            # Note: the final usage chunk has "choices": [] (empty),
+                            # so we must guard against that before indexing.
+                            choices = chunk_data.get("choices", [])
+                            if choices:
+                                delta = choices[0].get("delta", {})
+                                if "content" in delta and delta["content"] is not None:
+                                    accumulated_content += delta["content"]
 
                             # Extract usage stats (typically in final event before [DONE])
                             if "usage" in chunk_data:
