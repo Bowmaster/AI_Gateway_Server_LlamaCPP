@@ -35,6 +35,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Uvicorn reconfigures the root logger on startup, which can swallow our
+# app-level messages. Attach a StreamHandler directly to the loggers we
+# care about so startup/crash diagnostics are always visible.
+_app_handler = logging.StreamHandler(sys.stderr)
+_app_handler.setFormatter(logging.Formatter(config.LOG_FORMAT))
+for _logger_name in (__name__, "llama_manager", "server_config", "hardware_detector"):
+    _l = logging.getLogger(_logger_name)
+    if not _l.handlers:
+        _l.addHandler(_app_handler)
+        _l.setLevel(config.LOG_LEVEL)
+
 # ============================================================================
 # FastAPI App
 # ============================================================================
@@ -138,6 +149,9 @@ class HealthResponse(BaseModel):
     model_idle_unloaded: bool
     idle_timeout_seconds: int
     idle_seconds: float
+    # Crash diagnostics
+    crash_exit_code: Optional[int] = None
+    crash_message: Optional[str] = None
 
 class ModelInfo(BaseModel):
     key: str
@@ -519,6 +533,8 @@ async def call_llama_server_streaming(
         "top_k": kwargs.get("top_k", config.DEFAULT_TOP_K),
         "repeat_penalty": kwargs.get("repeat_penalty", config.DEFAULT_REPEAT_PENALTY),
         "stream": True,
+        # Request usage stats in the final streaming chunk
+        "stream_options": {"include_usage": True},
     }
 
     try:
@@ -535,12 +551,13 @@ async def call_llama_server_streaming(
 
                 async for line in response.aiter_lines():
                     if line.startswith("data: "):
-                        # Forward SSE event from llama-server
-                        yield f"{line}\n\n"
-
-                        # Check for completion signal
+                        # Don't forward [DONE] — generate_stream() sends its
+                        # own after the stream_end metadata event
                         if line == "data: [DONE]":
                             break
+
+                        # Forward SSE event from llama-server
+                        yield f"{line}\n\n"
 
     except httpx.TimeoutException:
         yield f'data: {{"error": "Request to llama-server timed out"}}\n\n'
@@ -554,15 +571,30 @@ async def call_llama_server_streaming(
 # ============================================================================
 
 async def idle_check_loop():
-    """Background task that periodically checks for idle timeout and unloads the model."""
+    """Background task that periodically checks for idle timeout, unloads the model,
+    and proactively detects unexpected process crashes."""
     while True:
         await asyncio.sleep(config.IDLE_CHECK_INTERVAL_SECONDS)
 
-        # Skip if disabled, shutting down, generating, or already unloaded
-        if config.IDLE_TIMEOUT_SECONDS <= 0:
-            continue
         if state.shutdown_requested:
             break
+
+        # Proactive crash detection — call is_healthy() so it captures
+        # crash diagnostics (exit code + stderr) immediately rather than
+        # waiting for a client request to trigger the check.
+        if (state.llama_manager and state.llama_manager.is_running
+                and not state.is_generating):
+            if not state.llama_manager.is_healthy():
+                crash = state.llama_manager.last_crash_info
+                if crash:
+                    logger.error(
+                        f"Background check: llama-server crashed "
+                        f"(exit code: {crash.get('exit_code')})"
+                    )
+
+        # Skip idle unload if disabled, generating, or not running
+        if config.IDLE_TIMEOUT_SECONDS <= 0:
+            continue
         if state.is_generating:
             continue
         if not state.llama_manager or not state.llama_manager.is_running:
@@ -654,6 +686,21 @@ async def startup_event():
     logger.info(f"  GPU Layers: {config.LLAMA_SERVER_CONFIG['n_gpu_layers']}")
     logger.info(f"  Context Size: {config.LLAMA_SERVER_CONFIG['ctx_size']} tokens")
     logger.info(f"  CPU Threads: {config.LLAMA_SERVER_CONFIG['threads'] or 'auto'}")
+    # CPU optimization flags
+    if config.LLAMA_SERVER_CONFIG.get('numa_mode'):
+        logger.info(f"  NUMA Mode: {config.LLAMA_SERVER_CONFIG['numa_mode']}")
+    if config.LLAMA_SERVER_CONFIG.get('batch_size'):
+        logger.info(f"  Batch Size: {config.LLAMA_SERVER_CONFIG['batch_size']}")
+    if config.LLAMA_SERVER_CONFIG.get('ubatch_size'):
+        logger.info(f"  UBatch Size: {config.LLAMA_SERVER_CONFIG['ubatch_size']}")
+    if config.LLAMA_SERVER_CONFIG.get('mlock'):
+        logger.info(f"  Memory Lock: enabled")
+    if config.LLAMA_SERVER_CONFIG.get('threads_batch'):
+        logger.info(f"  Threads (batch/prefill): {config.LLAMA_SERVER_CONFIG['threads_batch']}")
+    if config.LLAMA_SERVER_CONFIG.get('flash_attn'):
+        logger.info(f"  Flash Attention: enabled")
+    if config.LLAMA_SERVER_CONFIG.get('no_mmap'):
+        logger.info(f"  No MMap (preload): enabled")
     logger.info("=" * 60)
 
     # Validate configuration
@@ -760,11 +807,16 @@ async def health_check():
     is_idle_unloaded = state.llama_manager.idle_unloaded if state.llama_manager else False
     idle_seconds = time.time() - state.last_activity_time
 
+    # Check for crash info
+    crash_info = state.llama_manager.last_crash_info if state.llama_manager else None
+
     # Determine status string
     if is_loaded:
         health_status = "ok"
     elif is_idle_unloaded:
         health_status = "idle"
+    elif crash_info:
+        health_status = "crashed"
     else:
         health_status = "degraded"
 
@@ -821,7 +873,10 @@ async def health_check():
         # Idle model unloading
         model_idle_unloaded=is_idle_unloaded,
         idle_timeout_seconds=config.IDLE_TIMEOUT_SECONDS,
-        idle_seconds=round(idle_seconds, 1)
+        idle_seconds=round(idle_seconds, 1),
+        # Crash diagnostics
+        crash_exit_code=crash_info.get("exit_code") if crash_info else None,
+        crash_message=crash_info.get("stderr", "")[:200] if crash_info else None,
     )
 
 @app.get("/models", response_model=ModelsListResponse)
@@ -1527,9 +1582,13 @@ async def chat_stream(request: ChatRequest):
                             chunk_data = json.loads(event[6:].strip())
 
                             # Accumulate content from deltas
-                            delta = chunk_data.get("choices", [{}])[0].get("delta", {})
-                            if "content" in delta and delta["content"] is not None:
-                                accumulated_content += delta["content"]
+                            # Note: the final usage chunk has "choices": [] (empty),
+                            # so we must guard against that before indexing.
+                            choices = chunk_data.get("choices", [])
+                            if choices:
+                                delta = choices[0].get("delta", {})
+                                if "content" in delta and delta["content"] is not None:
+                                    accumulated_content += delta["content"]
 
                             # Extract usage stats (typically in final event before [DONE])
                             if "usage" in chunk_data:
@@ -1705,6 +1764,13 @@ async def get_hardware_info():
             "n_gpu_layers": config.LLAMA_SERVER_CONFIG["n_gpu_layers"],
             "ctx_size": config.LLAMA_SERVER_CONFIG["ctx_size"],
             "threads": config.LLAMA_SERVER_CONFIG["threads"],
+            "numa_mode": config.LLAMA_SERVER_CONFIG.get("numa_mode"),
+            "batch_size": config.LLAMA_SERVER_CONFIG.get("batch_size"),
+            "ubatch_size": config.LLAMA_SERVER_CONFIG.get("ubatch_size"),
+            "mlock": config.LLAMA_SERVER_CONFIG.get("mlock", False),
+            "threads_batch": config.LLAMA_SERVER_CONFIG.get("threads_batch"),
+            "flash_attn": config.LLAMA_SERVER_CONFIG.get("flash_attn", False),
+            "no_mmap": config.LLAMA_SERVER_CONFIG.get("no_mmap", False),
         },
         device_string=get_device_string()
     )

@@ -33,6 +33,9 @@ class LlamaServerManager:
         self.last_use_hf: bool = False
         self.last_ctx_size: Optional[int] = None
         self.idle_unloaded: bool = False
+
+        # Crash diagnostics — populated when process dies unexpectedly
+        self.last_crash_info: Optional[Dict[str, Any]] = None
         
     def start(self, model_path_or_hf: str, use_hf: bool = False, ctx_size: Optional[int] = None) -> bool:
         """
@@ -95,6 +98,28 @@ class LlamaServerManager:
         if self.config.get('threads'):
             cmd.extend(["--threads", str(self.config['threads'])])
 
+        # CPU optimization flags (only meaningful for CPU/hybrid modes)
+        if self.config.get('numa_mode'):
+            cmd.extend(["--numa", str(self.config['numa_mode'])])
+        if self.config.get('batch_size'):
+            cmd.extend(["--batch-size", str(self.config['batch_size'])])
+        if self.config.get('ubatch_size'):
+            cmd.extend(["--ubatch-size", str(self.config['ubatch_size'])])
+        if self.config.get('mlock'):
+            cmd.append("--mlock")
+        if self.config.get('threads_batch'):
+            cmd.extend(["--threads-batch", str(self.config['threads_batch'])])
+        flash_attn = self.config.get('flash_attn')
+        if flash_attn:
+            if isinstance(flash_attn, str):
+                # Value-bearing form: --flash-attn auto
+                cmd.extend(["--flash-attn", flash_attn])
+            else:
+                # Boolean flag form
+                cmd.append("--flash-attn")
+        if self.config.get('no_mmap'):
+            cmd.append("--no-mmap")
+
         # Add any additional args from config
         if self.config.get('additional_args'):
             cmd.extend(self.config['additional_args'])
@@ -104,6 +129,20 @@ class LlamaServerManager:
         logger.info(f"  GPU Layers: {self.config.get('n_gpu_layers', -1)}")
         logger.info(f"  Context Size: {effective_ctx_size} tokens")
         logger.info(f"  CPU Threads: {self.config.get('threads', 'auto')}")
+        if self.config.get('numa_mode'):
+            logger.info(f"  NUMA Mode: {self.config['numa_mode']}")
+        if self.config.get('batch_size'):
+            logger.info(f"  Batch Size: {self.config['batch_size']}")
+        if self.config.get('ubatch_size'):
+            logger.info(f"  UBatch Size: {self.config['ubatch_size']}")
+        if self.config.get('mlock'):
+            logger.info(f"  Memory Lock: enabled")
+        if self.config.get('threads_batch'):
+            logger.info(f"  Threads (batch/prefill): {self.config['threads_batch']}")
+        if self.config.get('flash_attn'):
+            logger.info(f"  Flash Attention: enabled")
+        if self.config.get('no_mmap'):
+            logger.info(f"  No MMap (preload): enabled")
 
         logger.info(f"Starting llama-server with command: {' '.join(cmd)}")
         
@@ -131,6 +170,7 @@ class LlamaServerManager:
             
             if self._wait_for_ready(timeout=timeout):
                 self.is_running = True
+                self.last_crash_info = None  # Clear any previous crash info on healthy start
                 logger.info(f"llama-server started successfully (PID: {self.process.pid})")
                 return True
             else:
@@ -147,13 +187,23 @@ class LlamaServerManager:
         if not self.process or not self.process.stderr:
             return
 
+        error_keywords = ('error', 'fatal', 'abort', 'exception', 'failed', 'segfault', 'signal')
+        warn_keywords = ('warn', 'invalid', 'unsupported', 'cannot', 'not found')
+        info_keywords = ('download', 'fetching', 'progress', 'mb', 'loaded', 'ready')
+
         for line in self.process.stderr:
             line = line.strip()
             if not line:
                 continue
-            # Highlight download keywords
-            level = "info" if any(kw in line.lower() for kw in ['download', 'fetching', 'progress', 'mb']) else "debug"
-            getattr(logger, level)(f"llama-server: {line}")
+            line_lower = line.lower()
+            if any(kw in line_lower for kw in error_keywords):
+                logger.error(f"llama-server: {line}")
+            elif any(kw in line_lower for kw in warn_keywords):
+                logger.warning(f"llama-server: {line}")
+            elif any(kw in line_lower for kw in info_keywords):
+                logger.info(f"llama-server: {line}")
+            else:
+                logger.debug(f"llama-server: {line}")
 
     def _wait_for_ready(self, timeout: int = 60) -> bool:
         """
@@ -393,19 +443,45 @@ class LlamaServerManager:
     def is_healthy(self) -> bool:
         """
         Check if llama-server is running and responsive.
-        
+
+        When the process is found dead, captures exit code and remaining stderr
+        into self.last_crash_info for surfacing via /health and logs.
+
         Returns:
             True if healthy, False otherwise
         """
         if not self.is_running or not self.process:
             return False
-        
+
         # Check if process is still alive
         if self.process.poll() is not None:
-            logger.warning("llama-server process has terminated")
+            exit_code = self.process.returncode
+
+            # Capture remaining stderr for diagnostics
+            stderr_tail = ""
+            try:
+                remaining = self.process.stderr.read() if self.process.stderr else ""
+                if remaining and remaining.strip():
+                    # Keep last 500 chars to avoid huge dumps
+                    stderr_tail = remaining.strip()[-500:]
+            except Exception:
+                pass
+
+            self.last_crash_info = {
+                "exit_code": exit_code,
+                "stderr": stderr_tail,
+                "timestamp": time.time(),
+            }
+
+            logger.error(
+                f"llama-server process has terminated (exit code: {exit_code})"
+            )
+            if stderr_tail:
+                logger.error(f"llama-server stderr: {stderr_tail}")
+
             self.is_running = False
             return False
-        
+
         # Check health endpoint
         try:
             response = requests.get(f"{self.server_url}/health", timeout=5)

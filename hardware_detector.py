@@ -23,6 +23,9 @@ from typing import Dict, Any, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Profile version — bump when config schema changes to force re-detection
+PROFILE_VERSION = "1.3"
+
 # Try to import optional dependencies with graceful fallback
 try:
     import psutil
@@ -318,6 +321,95 @@ def detect_memory() -> Dict[str, Any]:
 
 
 # ============================================================================
+# NUMA / Multi-Socket Detection
+# ============================================================================
+
+def detect_numa_topology(cpu_info: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Detect NUMA topology (multi-socket systems) for optimal thread/memory placement.
+
+    Detection strategy (in priority order):
+    1. Windows: wmic cpu get SocketDesignation to count physical sockets
+    2. Linux: count directories in /sys/devices/system/node/
+    3. Heuristic fallback: high physical core count + server CPU name keywords
+
+    Args:
+        cpu_info: Dictionary from detect_cpu()
+
+    Returns:
+        Dictionary with NUMA information:
+        {
+            "numa_nodes": int,
+            "is_multi_socket": bool,
+            "detection_method": str
+        }
+    """
+    system = platform.system()
+
+    # Windows: query WMI for socket count
+    if system == "Windows":
+        try:
+            result = subprocess.run(
+                ["wmic", "cpu", "get", "SocketDesignation"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                # Each non-empty, non-header line is a socket
+                lines = [l.strip() for l in result.stdout.strip().split('\n') if l.strip()]
+                # First line is the header "SocketDesignation"
+                sockets = max(1, len(lines) - 1)
+                logger.info(f"NUMA detection (wmic): {sockets} socket(s)")
+                return {
+                    "numa_nodes": sockets,
+                    "is_multi_socket": sockets > 1,
+                    "detection_method": "wmic"
+                }
+        except Exception as e:
+            logger.debug(f"wmic NUMA detection failed: {e}")
+
+    # Linux: count NUMA node directories
+    if system == "Linux":
+        try:
+            numa_path = Path("/sys/devices/system/node")
+            if numa_path.exists():
+                nodes = [d for d in numa_path.iterdir() if d.is_dir() and d.name.startswith("node")]
+                node_count = max(1, len(nodes))
+                logger.info(f"NUMA detection (sysfs): {node_count} node(s)")
+                return {
+                    "numa_nodes": node_count,
+                    "is_multi_socket": node_count > 1,
+                    "detection_method": "sysfs"
+                }
+        except Exception as e:
+            logger.debug(f"sysfs NUMA detection failed: {e}")
+
+    # Heuristic fallback: server CPUs with high core counts are likely multi-socket
+    physical_cores = cpu_info.get("physical_cores", 0)
+    cpu_name = cpu_info.get("name", "").lower()
+    server_keywords = ("xeon", "epyc", "e5-", "e7-", "e3-", "platinum", "gold", "silver")
+
+    is_server_cpu = any(kw in cpu_name for kw in server_keywords)
+    if is_server_cpu and physical_cores >= 20:
+        # High core-count server CPU — likely dual-socket
+        inferred_sockets = 2
+        logger.info(f"NUMA detection (heuristic): inferred {inferred_sockets} sockets "
+                     f"({physical_cores} cores, server CPU '{cpu_info.get('name', '')}')")
+        return {
+            "numa_nodes": inferred_sockets,
+            "is_multi_socket": True,
+            "detection_method": "heuristic"
+        }
+
+    # Single socket assumed
+    logger.info("NUMA detection: single socket (default)")
+    return {
+        "numa_nodes": 1,
+        "is_multi_socket": False,
+        "detection_method": "default"
+    }
+
+
+# ============================================================================
 # Configuration Generation
 # ============================================================================
 
@@ -368,23 +460,17 @@ def calculate_optimal_context(
             return 8192   # 8K context for 4-6GB VRAM
 
     elif mode == "cpu" or (mode == "auto" and ram_gb):
-        # CPU mode - use RAM
+        # CPU mode: conservative context optimizes for speed over capacity.
+        # Large KV caches destroy memory bandwidth on CPU, causing severe
+        # tok/s degradation even when RAM is abundant. 8K is sufficient for
+        # interactive use. Users can override via CTX_SIZE env var when they
+        # accept the speed tradeoff.
         if not ram_gb or ram_gb < 8:
             return 4096  # Minimal for low RAM
-
-        # CPU mode can use much larger context with abundant RAM
-        # Conservative estimate: 512 tokens per GB of RAM
-        tokens = int(ram_gb * 512)
-
-        # Clamp to reasonable ranges
-        if tokens < 8192:
-            return 8192
-        elif tokens > 131072:
-            return 131072  # llama.cpp maximum
+        elif ram_gb >= 16:
+            return 8192  # Speed-optimized default for 16GB+
         else:
-            # Round to nearest power of 2
-            import math
-            return 2 ** int(math.log2(tokens))
+            return 4096
 
     # Fallback
     return 8192
@@ -459,27 +545,60 @@ def generate_optimal_config(hardware_info: Dict[str, Any]) -> Dict[str, Any]:
     elif not has_gpu and ram_gb >= 128:
         # CPU high-RAM mode: No GPU but massive RAM (like System 2)
         ctx_size = calculate_optimal_context(ram_gb=ram_gb, mode="cpu")
-        threads = max(1, logical_cores - 4)  # Reserve 4 threads for system
+        physical_cores = cpu.get("physical_cores", logical_cores)
+        threads = max(1, physical_cores - 2)  # Physical cores only, avoids HT contention
+
+        # Read NUMA topology from hardware_info (populated by detect_and_save)
+        numa = hardware_info.get("numa", {})
+        is_multi_socket = numa.get("is_multi_socket", False)
 
         return {
             "n_gpu_layers": 0,  # All on CPU
             "ctx_size": ctx_size,
             "threads": threads,
             "mode": "cpu_highram",
-            "reasoning": f"No GPU, {ram_gb}GB RAM, {logical_cores} threads - optimized for large context CPU inference"
+            "reasoning": (f"No GPU, {ram_gb}GB RAM, {physical_cores} physical cores "
+                          f"({logical_cores} logical) - CPU inference with physical-core threading"
+                          f"{', NUMA distribute' if is_multi_socket and platform.system() != 'Windows' else ''}"
+                          f"{', NUMA skipped (Windows)' if is_multi_socket and platform.system() == 'Windows' else ''}"),
+            "cpu_optimization": {
+                # NUMA distribute uses POSIX-specific APIs in llama.cpp; crashes on Windows
+                "numa_mode": ("distribute" if is_multi_socket and platform.system() != "Windows" else None),
+                "batch_size": 512,
+                "ubatch_size": 512,
+                "mlock": True,
+                # Prefill uses all logical cores (HT helps for parallel prompt eval)
+                "threads_batch": logical_cores,
+                # Flash attention is a GPU VRAM optimization; not beneficial on CPU
+                "flash_attn": False,
+                # Preload entire model into RAM (avoids mmap page faults, safe with 128GB+)
+                "no_mmap": True,
+            }
         }
 
     elif not has_gpu and ram_gb < 128:
         # CPU standard mode: No GPU, normal RAM
         ctx_size = calculate_optimal_context(ram_gb=ram_gb, mode="cpu")
-        threads = max(1, logical_cores - 2)  # Reserve 2 threads
+        physical_cores = cpu.get("physical_cores", logical_cores)
+        threads = max(1, physical_cores - 2)  # Physical cores only, avoids HT contention
 
         return {
             "n_gpu_layers": 0,  # All on CPU
             "ctx_size": ctx_size,
             "threads": threads,
             "mode": "cpu_standard",
-            "reasoning": f"No GPU, {ram_gb}GB RAM, {logical_cores} threads - CPU-only mode"
+            "reasoning": (f"No GPU, {ram_gb}GB RAM, {physical_cores} physical cores "
+                          f"({logical_cores} logical) - CPU-only mode"),
+            "cpu_optimization": {
+                "numa_mode": None,
+                "batch_size": 512,
+                "ubatch_size": 512,
+                "mlock": ram_gb >= 32,
+                "threads_batch": logical_cores,
+                # Flash attention is a GPU VRAM optimization; not beneficial on CPU
+                "flash_attn": False,
+                "no_mmap": False,  # Don't preload on lower-RAM systems
+            }
         }
 
     else:
@@ -573,6 +692,15 @@ def load_hardware_profile(path: str = ".hardware_profile.json") -> Optional[Dict
         with open(path, 'r') as f:
             profile = json.load(f)
 
+        # Check profile version — re-detect if schema has changed
+        saved_version = profile.get("version", "0.0")
+        if saved_version < PROFILE_VERSION:
+            logger.warning(
+                f"Hardware profile version {saved_version} is outdated "
+                f"(current: {PROFILE_VERSION}). Re-detecting hardware."
+            )
+            return None
+
         logger.info(f"Hardware profile loaded from {path}")
         return profile
 
@@ -603,12 +731,14 @@ def detect_and_save(path: str = ".hardware_profile.json") -> Dict[str, Any]:
     gpu_info = detect_nvidia_gpu()
     cpu_info = detect_cpu()
     memory_info = detect_memory()
+    numa_info = detect_numa_topology(cpu_info)
 
     # Combine into hardware info
     hardware_info = {
         "gpu": gpu_info,
         "cpu": cpu_info,
-        "memory": memory_info
+        "memory": memory_info,
+        "numa": numa_info
     }
 
     # Generate optimal configuration
@@ -619,12 +749,13 @@ def detect_and_save(path: str = ".hardware_profile.json") -> Dict[str, Any]:
 
     # Build complete profile
     profile = {
-        "version": "1.0",
+        "version": PROFILE_VERSION,
         "detected_at": datetime.now().isoformat(),
         "system_type": system_type,
         "gpu": gpu_info,
         "cpu": cpu_info,
         "memory": memory_info,
+        "numa": numa_info,
         "recommended_config": recommended_config,
         "manual_overrides": {}  # User can add custom overrides here
     }
@@ -641,10 +772,21 @@ def detect_and_save(path: str = ".hardware_profile.json") -> Dict[str, Any]:
         logger.info(f"GPU: {gpu_info['name']} ({gpu_info['vram_gb']}GB VRAM)")
     else:
         logger.info("GPU: None")
-    logger.info(f"CPU: {cpu_info['name']} ({cpu_info['logical_cores']} threads)")
+    logger.info(f"CPU: {cpu_info['name']} ({cpu_info['logical_cores']} threads, "
+                f"{cpu_info.get('physical_cores', '?')} physical cores)")
+    logger.info(f"NUMA: {numa_info['numa_nodes']} node(s) "
+                f"({'multi-socket' if numa_info['is_multi_socket'] else 'single-socket'}, "
+                f"via {numa_info['detection_method']})")
     logger.info(f"RAM: {memory_info['total_gb']:.1f}GB")
     logger.info(f"Recommended Mode: {recommended_config['mode']}")
     logger.info(f"Context Size: {recommended_config['ctx_size']} tokens")
+    logger.info(f"Threads: {recommended_config.get('threads', 'auto')}")
+    cpu_opt = recommended_config.get('cpu_optimization')
+    if cpu_opt:
+        logger.info(f"CPU Optimization: NUMA={cpu_opt.get('numa_mode', 'none')}, "
+                     f"batch={cpu_opt.get('batch_size')}, "
+                     f"ubatch={cpu_opt.get('ubatch_size')}, "
+                     f"mlock={cpu_opt.get('mlock')}")
     logger.info(f"Reasoning: {recommended_config['reasoning']}")
     logger.info("=" * 60)
 
