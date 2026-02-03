@@ -15,7 +15,8 @@
       "Bash(ls:*)",
       "Bash(dir /b \"C:\\\\Users\\\\blutterb\\\\Documents\\\\Github\\\\Bowmaster\\\\AI_Gateway_Server_LlamaCPP\\\\*.py\")",
       "Bash(cd:*)",
-      "Bash(python test_hardware.py:*)"
+      "Bash(python test_hardware.py:*)",
+      "Bash(python:*)"
     ]
   }
 }

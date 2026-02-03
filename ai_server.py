@@ -35,6 +35,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Uvicorn reconfigures the root logger on startup, which can swallow our
+# app-level messages. Attach a StreamHandler directly to the loggers we
+# care about so startup/crash diagnostics are always visible.
+_app_handler = logging.StreamHandler(sys.stderr)
+_app_handler.setFormatter(logging.Formatter(config.LOG_FORMAT))
+for _logger_name in (__name__, "llama_manager", "server_config", "hardware_detector"):
+    _l = logging.getLogger(_logger_name)
+    if not _l.handlers:
+        _l.addHandler(_app_handler)
+        _l.setLevel(config.LOG_LEVEL)
+
 # ============================================================================
 # FastAPI App
 # ============================================================================
@@ -138,6 +149,9 @@ class HealthResponse(BaseModel):
     model_idle_unloaded: bool
     idle_timeout_seconds: int
     idle_seconds: float
+    # Crash diagnostics
+    crash_exit_code: Optional[int] = None
+    crash_message: Optional[str] = None
 
 class ModelInfo(BaseModel):
     key: str
@@ -557,15 +571,30 @@ async def call_llama_server_streaming(
 # ============================================================================
 
 async def idle_check_loop():
-    """Background task that periodically checks for idle timeout and unloads the model."""
+    """Background task that periodically checks for idle timeout, unloads the model,
+    and proactively detects unexpected process crashes."""
     while True:
         await asyncio.sleep(config.IDLE_CHECK_INTERVAL_SECONDS)
 
-        # Skip if disabled, shutting down, generating, or already unloaded
-        if config.IDLE_TIMEOUT_SECONDS <= 0:
-            continue
         if state.shutdown_requested:
             break
+
+        # Proactive crash detection — call is_healthy() so it captures
+        # crash diagnostics (exit code + stderr) immediately rather than
+        # waiting for a client request to trigger the check.
+        if (state.llama_manager and state.llama_manager.is_running
+                and not state.is_generating):
+            if not state.llama_manager.is_healthy():
+                crash = state.llama_manager.last_crash_info
+                if crash:
+                    logger.error(
+                        f"Background check: llama-server crashed "
+                        f"(exit code: {crash.get('exit_code')})"
+                    )
+
+        # Skip idle unload if disabled, generating, or not running
+        if config.IDLE_TIMEOUT_SECONDS <= 0:
+            continue
         if state.is_generating:
             continue
         if not state.llama_manager or not state.llama_manager.is_running:
@@ -778,11 +807,16 @@ async def health_check():
     is_idle_unloaded = state.llama_manager.idle_unloaded if state.llama_manager else False
     idle_seconds = time.time() - state.last_activity_time
 
+    # Check for crash info
+    crash_info = state.llama_manager.last_crash_info if state.llama_manager else None
+
     # Determine status string
     if is_loaded:
         health_status = "ok"
     elif is_idle_unloaded:
         health_status = "idle"
+    elif crash_info:
+        health_status = "crashed"
     else:
         health_status = "degraded"
 
@@ -839,7 +873,10 @@ async def health_check():
         # Idle model unloading
         model_idle_unloaded=is_idle_unloaded,
         idle_timeout_seconds=config.IDLE_TIMEOUT_SECONDS,
-        idle_seconds=round(idle_seconds, 1)
+        idle_seconds=round(idle_seconds, 1),
+        # Crash diagnostics
+        crash_exit_code=crash_info.get("exit_code") if crash_info else None,
+        crash_message=crash_info.get("stderr", "")[:200] if crash_info else None,
     )
 
 @app.get("/models", response_model=ModelsListResponse)

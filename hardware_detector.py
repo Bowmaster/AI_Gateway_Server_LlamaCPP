@@ -23,6 +23,9 @@ from typing import Dict, Any, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Profile version — bump when config schema changes to force re-detection
+PROFILE_VERSION = "1.2"
+
 # Try to import optional dependencies with graceful fallback
 try:
     import psutil
@@ -556,9 +559,11 @@ def generate_optimal_config(hardware_info: Dict[str, Any]) -> Dict[str, Any]:
             "mode": "cpu_highram",
             "reasoning": (f"No GPU, {ram_gb}GB RAM, {physical_cores} physical cores "
                           f"({logical_cores} logical) - CPU inference with physical-core threading"
-                          f"{', NUMA distribute' if is_multi_socket else ''}"),
+                          f"{', NUMA distribute' if is_multi_socket and platform.system() != 'Windows' else ''}"
+                          f"{', NUMA skipped (Windows)' if is_multi_socket and platform.system() == 'Windows' else ''}"),
             "cpu_optimization": {
-                "numa_mode": "distribute" if is_multi_socket else None,
+                # NUMA distribute uses POSIX-specific APIs in llama.cpp; crashes on Windows
+                "numa_mode": ("distribute" if is_multi_socket and platform.system() != "Windows" else None),
                 "batch_size": 512,
                 "ubatch_size": 512,
                 "mlock": True,
@@ -685,6 +690,15 @@ def load_hardware_profile(path: str = ".hardware_profile.json") -> Optional[Dict
         with open(path, 'r') as f:
             profile = json.load(f)
 
+        # Check profile version — re-detect if schema has changed
+        saved_version = profile.get("version", "0.0")
+        if saved_version < PROFILE_VERSION:
+            logger.warning(
+                f"Hardware profile version {saved_version} is outdated "
+                f"(current: {PROFILE_VERSION}). Re-detecting hardware."
+            )
+            return None
+
         logger.info(f"Hardware profile loaded from {path}")
         return profile
 
@@ -733,7 +747,7 @@ def detect_and_save(path: str = ".hardware_profile.json") -> Dict[str, Any]:
 
     # Build complete profile
     profile = {
-        "version": "1.1",
+        "version": PROFILE_VERSION,
         "detected_at": datetime.now().isoformat(),
         "system_type": system_type,
         "gpu": gpu_info,
