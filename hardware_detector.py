@@ -562,6 +562,11 @@ def generate_optimal_config(hardware_info: Dict[str, Any]) -> Dict[str, Any]:
                 "batch_size": 512,
                 "ubatch_size": 512,
                 "mlock": True,
+                # Prefill uses all logical cores (HT helps for parallel prompt eval)
+                "threads_batch": logical_cores,
+                "flash_attn": True,
+                # Preload entire model into RAM (avoids mmap page faults, safe with 128GB+)
+                "no_mmap": True,
             }
         }
 
@@ -582,7 +587,10 @@ def generate_optimal_config(hardware_info: Dict[str, Any]) -> Dict[str, Any]:
                 "numa_mode": None,
                 "batch_size": 512,
                 "ubatch_size": 512,
-                "mlock": ram_gb >= 32,  # Only lock memory if we have enough
+                "mlock": ram_gb >= 32,
+                "threads_batch": logical_cores,
+                "flash_attn": True,
+                "no_mmap": False,  # Don't preload on lower-RAM systems
             }
         }
 

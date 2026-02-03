@@ -208,6 +208,9 @@ def test_config_generation_system2():
     print(f"    Batch Size: {cpu_opt.get('batch_size')}")
     print(f"    UBatch Size: {cpu_opt.get('ubatch_size')}")
     print(f"    Memory Lock: {cpu_opt.get('mlock')}")
+    print(f"    Threads (batch): {cpu_opt.get('threads_batch')}")
+    print(f"    Flash Attention: {cpu_opt.get('flash_attn')}")
+    print(f"    No MMap: {cpu_opt.get('no_mmap')}")
 
     # Verify System 2 config expectations
     assert config['n_gpu_layers'] == 0, "System 2 should use CPU-only mode"
@@ -223,6 +226,9 @@ def test_config_generation_system2():
     assert cpu_opt.get('batch_size') == 512, "Batch size should be 512"
     assert cpu_opt.get('ubatch_size') == 512, "UBatch size should be 512"
     assert cpu_opt.get('mlock') == True, "System 2 (256GB) should enable mlock"
+    assert cpu_opt.get('threads_batch') == 56, "Batch threads should use all logical cores (56)"
+    assert cpu_opt.get('flash_attn') == True, "Flash attention should be enabled"
+    assert cpu_opt.get('no_mmap') == True, "No-mmap (preload) should be enabled for high-RAM"
 
     print("✓ System 2 config generation passed")
     return config

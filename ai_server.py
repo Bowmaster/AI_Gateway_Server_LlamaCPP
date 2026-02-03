@@ -663,6 +663,12 @@ async def startup_event():
         logger.info(f"  UBatch Size: {config.LLAMA_SERVER_CONFIG['ubatch_size']}")
     if config.LLAMA_SERVER_CONFIG.get('mlock'):
         logger.info(f"  Memory Lock: enabled")
+    if config.LLAMA_SERVER_CONFIG.get('threads_batch'):
+        logger.info(f"  Threads (batch/prefill): {config.LLAMA_SERVER_CONFIG['threads_batch']}")
+    if config.LLAMA_SERVER_CONFIG.get('flash_attn'):
+        logger.info(f"  Flash Attention: enabled")
+    if config.LLAMA_SERVER_CONFIG.get('no_mmap'):
+        logger.info(f"  No MMap (preload): enabled")
     logger.info("=" * 60)
 
     # Validate configuration
@@ -1718,6 +1724,9 @@ async def get_hardware_info():
             "batch_size": config.LLAMA_SERVER_CONFIG.get("batch_size"),
             "ubatch_size": config.LLAMA_SERVER_CONFIG.get("ubatch_size"),
             "mlock": config.LLAMA_SERVER_CONFIG.get("mlock", False),
+            "threads_batch": config.LLAMA_SERVER_CONFIG.get("threads_batch"),
+            "flash_attn": config.LLAMA_SERVER_CONFIG.get("flash_attn", False),
+            "no_mmap": config.LLAMA_SERVER_CONFIG.get("no_mmap", False),
         },
         device_string=get_device_string()
     )

@@ -104,6 +104,12 @@ class LlamaServerManager:
             cmd.extend(["--ubatch-size", str(self.config['ubatch_size'])])
         if self.config.get('mlock'):
             cmd.append("--mlock")
+        if self.config.get('threads_batch'):
+            cmd.extend(["--threads-batch", str(self.config['threads_batch'])])
+        if self.config.get('flash_attn'):
+            cmd.append("--flash-attn")
+        if self.config.get('no_mmap'):
+            cmd.append("--no-mmap")
 
         # Add any additional args from config
         if self.config.get('additional_args'):
@@ -122,6 +128,12 @@ class LlamaServerManager:
             logger.info(f"  UBatch Size: {self.config['ubatch_size']}")
         if self.config.get('mlock'):
             logger.info(f"  Memory Lock: enabled")
+        if self.config.get('threads_batch'):
+            logger.info(f"  Threads (batch/prefill): {self.config['threads_batch']}")
+        if self.config.get('flash_attn'):
+            logger.info(f"  Flash Attention: enabled")
+        if self.config.get('no_mmap'):
+            logger.info(f"  No MMap (preload): enabled")
 
         logger.info(f"Starting llama-server with command: {' '.join(cmd)}")
         

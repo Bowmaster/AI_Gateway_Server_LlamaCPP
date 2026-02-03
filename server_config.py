@@ -143,6 +143,26 @@ def get_runtime_config() -> Tuple[Dict[str, Any], Dict[str, Any]]:
         config["cpu_optimization"] = cpu_opt
         logger.info(f"Environment override: MLOCK={cpu_opt['mlock']}")
 
+    if os.getenv("THREADS_BATCH"):
+        cpu_opt = config.get("cpu_optimization", {})
+        cpu_opt["threads_batch"] = int(os.getenv("THREADS_BATCH"))
+        config["cpu_optimization"] = cpu_opt
+        logger.info(f"Environment override: THREADS_BATCH={cpu_opt['threads_batch']}")
+
+    if os.getenv("FLASH_ATTN"):
+        val = os.getenv("FLASH_ATTN").lower()
+        cpu_opt = config.get("cpu_optimization", {})
+        cpu_opt["flash_attn"] = val in ("1", "true", "on", "yes")
+        config["cpu_optimization"] = cpu_opt
+        logger.info(f"Environment override: FLASH_ATTN={cpu_opt['flash_attn']}")
+
+    if os.getenv("NO_MMAP"):
+        val = os.getenv("NO_MMAP").lower()
+        cpu_opt = config.get("cpu_optimization", {})
+        cpu_opt["no_mmap"] = val in ("1", "true", "on", "yes")
+        config["cpu_optimization"] = cpu_opt
+        logger.info(f"Environment override: NO_MMAP={cpu_opt['no_mmap']}")
+
     config.update(env_overrides)
 
     # Ensure required keys exist with fallback defaults
@@ -182,11 +202,15 @@ LLAMA_SERVER_CONFIG = {
     "threads": _runtime_config.get("threads"),
 
     # CPU optimization flags (auto-configured, only active for CPU modes)
-    # Override with: NUMA_MODE, BATCH_SIZE, UBATCH_SIZE, MLOCK
-    "numa_mode": _cpu_opt.get("numa_mode"),       # e.g. "distribute" for multi-socket
-    "batch_size": _cpu_opt.get("batch_size"),       # prompt processing batch size
-    "ubatch_size": _cpu_opt.get("ubatch_size"),     # micro-batch size
-    "mlock": _cpu_opt.get("mlock", False),          # lock model in RAM (prevents paging)
+    # Override with: NUMA_MODE, BATCH_SIZE, UBATCH_SIZE, MLOCK,
+    #                THREADS_BATCH, FLASH_ATTN, NO_MMAP
+    "numa_mode": _cpu_opt.get("numa_mode"),           # e.g. "distribute" for multi-socket
+    "batch_size": _cpu_opt.get("batch_size"),          # prompt processing batch size
+    "ubatch_size": _cpu_opt.get("ubatch_size"),        # micro-batch size
+    "mlock": _cpu_opt.get("mlock", False),             # lock model in RAM (prevents paging)
+    "threads_batch": _cpu_opt.get("threads_batch"),    # threads for prompt eval (can use HT)
+    "flash_attn": _cpu_opt.get("flash_attn", False),  # flash attention (reduces mem reads)
+    "no_mmap": _cpu_opt.get("no_mmap", False),         # preload model (no memory-mapping)
 
     # Auto-start llama-server when Python server starts
     "auto_start": True,
