@@ -519,6 +519,8 @@ async def call_llama_server_streaming(
         "top_k": kwargs.get("top_k", config.DEFAULT_TOP_K),
         "repeat_penalty": kwargs.get("repeat_penalty", config.DEFAULT_REPEAT_PENALTY),
         "stream": True,
+        # Request usage stats in the final streaming chunk
+        "stream_options": {"include_usage": True},
     }
 
     try:
@@ -535,12 +537,13 @@ async def call_llama_server_streaming(
 
                 async for line in response.aiter_lines():
                     if line.startswith("data: "):
-                        # Forward SSE event from llama-server
-                        yield f"{line}\n\n"
-
-                        # Check for completion signal
+                        # Don't forward [DONE] — generate_stream() sends its
+                        # own after the stream_end metadata event
                         if line == "data: [DONE]":
                             break
+
+                        # Forward SSE event from llama-server
+                        yield f"{line}\n\n"
 
     except httpx.TimeoutException:
         yield f'data: {{"error": "Request to llama-server timed out"}}\n\n'
