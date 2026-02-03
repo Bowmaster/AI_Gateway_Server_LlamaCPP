@@ -109,8 +109,14 @@ class LlamaServerManager:
             cmd.append("--mlock")
         if self.config.get('threads_batch'):
             cmd.extend(["--threads-batch", str(self.config['threads_batch'])])
-        if self.config.get('flash_attn'):
-            cmd.append("--flash-attn")
+        flash_attn = self.config.get('flash_attn')
+        if flash_attn:
+            if isinstance(flash_attn, str):
+                # Value-bearing form: --flash-attn auto
+                cmd.extend(["--flash-attn", flash_attn])
+            else:
+                # Boolean flag form
+                cmd.append("--flash-attn")
         if self.config.get('no_mmap'):
             cmd.append("--no-mmap")
 

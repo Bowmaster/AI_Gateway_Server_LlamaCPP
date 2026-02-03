@@ -24,7 +24,7 @@ from typing import Dict, Any, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 # Profile version — bump when config schema changes to force re-detection
-PROFILE_VERSION = "1.2"
+PROFILE_VERSION = "1.3"
 
 # Try to import optional dependencies with graceful fallback
 try:
@@ -569,7 +569,8 @@ def generate_optimal_config(hardware_info: Dict[str, Any]) -> Dict[str, Any]:
                 "mlock": True,
                 # Prefill uses all logical cores (HT helps for parallel prompt eval)
                 "threads_batch": logical_cores,
-                "flash_attn": True,
+                # Flash attention is a GPU VRAM optimization; not beneficial on CPU
+                "flash_attn": False,
                 # Preload entire model into RAM (avoids mmap page faults, safe with 128GB+)
                 "no_mmap": True,
             }
@@ -594,7 +595,8 @@ def generate_optimal_config(hardware_info: Dict[str, Any]) -> Dict[str, Any]:
                 "ubatch_size": 512,
                 "mlock": ram_gb >= 32,
                 "threads_batch": logical_cores,
-                "flash_attn": True,
+                # Flash attention is a GPU VRAM optimization; not beneficial on CPU
+                "flash_attn": False,
                 "no_mmap": False,  # Don't preload on lower-RAM systems
             }
         }
