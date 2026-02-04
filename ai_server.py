@@ -18,6 +18,7 @@ import json
 import requests
 import httpx
 import asyncio
+import uuid
 
 import server_config as config
 from llama_manager import LlamaServerManager
@@ -203,6 +204,84 @@ class ToolApprovalDecision(BaseModel):
 class ChatApprovalRequest(BaseModel):
     """Request to approve/deny pending tool calls"""
     decisions: List[ToolApprovalDecision]
+
+# ============================================================================
+# OpenAI-Compatible Request/Response Models (/v1/ endpoints)
+# ============================================================================
+
+class OAIMessage(BaseModel):
+    """OpenAI-compatible message supporting all role types."""
+    role: str
+    content: Optional[Union[str, List[Any]]] = None
+    name: Optional[str] = None
+    tool_calls: Optional[List[Dict[str, Any]]] = None
+    tool_call_id: Optional[str] = None
+
+class OAIStreamOptions(BaseModel):
+    include_usage: Optional[bool] = None
+
+class OAIChatRequest(BaseModel):
+    """OpenAI-compatible chat completion request."""
+    model: str
+    messages: List[OAIMessage]
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    n: Optional[int] = 1
+    stream: Optional[bool] = False
+    stream_options: Optional[OAIStreamOptions] = None
+    stop: Optional[Union[str, List[str]]] = None
+    max_tokens: Optional[int] = None
+    max_completion_tokens: Optional[int] = None
+    presence_penalty: Optional[float] = None
+    frequency_penalty: Optional[float] = None
+    logit_bias: Optional[Dict[str, float]] = None
+    logprobs: Optional[bool] = None
+    top_logprobs: Optional[int] = None
+    tools: Optional[List[Dict[str, Any]]] = None
+    tool_choice: Optional[Union[str, Dict[str, Any]]] = None
+    response_format: Optional[Dict[str, Any]] = None
+    seed: Optional[int] = None
+    user: Optional[str] = None
+    # Extensions (passed through to llama-server)
+    top_k: Optional[int] = None
+    repeat_penalty: Optional[float] = None
+
+class OAIUsage(BaseModel):
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+class OAIResponseMessage(BaseModel):
+    role: str = "assistant"
+    content: Optional[str] = None
+    tool_calls: Optional[List[Dict[str, Any]]] = None
+    refusal: Optional[str] = None
+
+class OAIChoice(BaseModel):
+    index: int
+    message: OAIResponseMessage
+    finish_reason: Optional[str] = None
+    logprobs: Optional[Any] = None
+
+class OAIChatCompletion(BaseModel):
+    id: str
+    object: str = "chat.completion"
+    created: int
+    model: str
+    choices: List[OAIChoice]
+    usage: OAIUsage
+    system_fingerprint: Optional[str] = None
+    service_tier: Optional[str] = None
+
+class OAIModelObject(BaseModel):
+    id: str
+    object: str = "model"
+    created: int
+    owned_by: str
+
+class OAIModelList(BaseModel):
+    object: str = "list"
+    data: List[OAIModelObject]
 
 # ============================================================================
 # Helper Functions & Decorators
@@ -792,6 +871,37 @@ async def shutdown_event():
     cleanup_llama_process()
 
     logger.info("Shutdown complete")
+
+# ============================================================================
+# OpenAI-Compatible Error Handling
+# ============================================================================
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc):
+    """Return OpenAI-format errors for /v1/ routes, default format otherwise."""
+    if request.url.path.startswith("/v1/"):
+        error_type_map = {
+            400: "invalid_request_error",
+            401: "authentication_error",
+            403: "permission_error",
+            404: "not_found_error",
+            429: "rate_limit_error",
+        }
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error": {
+                    "message": str(exc.detail),
+                    "type": error_type_map.get(exc.status_code, "server_error"),
+                    "param": None,
+                    "code": None,
+                }
+            }
+        )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail}
+    )
 
 # ============================================================================
 # API Endpoints
@@ -1817,6 +1927,458 @@ async def shutdown_server():
     await asyncio.sleep(1)
     import os
     os.kill(os.getpid(), signal.SIGTERM)
+
+# ============================================================================
+# OpenAI-Compatible Endpoints (/v1/)
+# ============================================================================
+
+def _make_completion_id() -> str:
+    """Generate a unique chat completion ID."""
+    return f"chatcmpl-{uuid.uuid4().hex[:29]}"
+
+
+def _convert_oai_messages(request_messages: List[OAIMessage]) -> List[Dict]:
+    """Convert OAIMessage objects to dicts for llama-server."""
+    messages = []
+    for msg in request_messages:
+        m = {"role": msg.role}
+        m["content"] = msg.content
+        if msg.name is not None:
+            m["name"] = msg.name
+        if msg.tool_calls is not None:
+            m["tool_calls"] = msg.tool_calls
+        if msg.tool_call_id is not None:
+            m["tool_call_id"] = msg.tool_call_id
+        messages.append(m)
+    return messages
+
+
+def _build_v1_payload(
+    request: OAIChatRequest,
+    messages: List[Dict],
+    tools_list: Optional[List] = None,
+) -> Dict:
+    """Build the payload to send to llama-server from an OpenAI-compatible request."""
+    payload = {
+        "messages": messages,
+        "temperature": request.temperature if request.temperature is not None else config.DEFAULT_TEMPERATURE,
+        "max_tokens": (
+            request.max_completion_tokens
+            or request.max_tokens
+            or config.DEFAULT_MAX_TOKENS
+        ),
+        "top_p": request.top_p if request.top_p is not None else config.DEFAULT_TOP_P,
+        "stream": False,
+    }
+
+    # Extensions (llama-server supports these)
+    if request.top_k is not None:
+        payload["top_k"] = request.top_k
+    if request.repeat_penalty is not None:
+        payload["repeat_penalty"] = request.repeat_penalty
+
+    # Standard OpenAI params forwarded to llama-server
+    if request.frequency_penalty is not None:
+        payload["frequency_penalty"] = request.frequency_penalty
+    if request.presence_penalty is not None:
+        payload["presence_penalty"] = request.presence_penalty
+    if request.stop is not None:
+        payload["stop"] = request.stop
+    if request.seed is not None:
+        payload["seed"] = request.seed
+    if request.logprobs is not None:
+        payload["logprobs"] = request.logprobs
+    if request.top_logprobs is not None:
+        payload["top_logprobs"] = request.top_logprobs
+    if request.response_format is not None:
+        payload["response_format"] = request.response_format
+    if request.n is not None and request.n != 1:
+        payload["n"] = request.n
+
+    # Tools
+    if tools_list:
+        payload["tools"] = tools_list
+        payload["tool_choice"] = request.tool_choice if request.tool_choice is not None else "auto"
+
+    return payload
+
+
+@app.post("/v1/chat/completions")
+@require_llama_server
+@require_not_generating
+async def v1_chat_completions(request: OAIChatRequest):
+    """
+    OpenAI-compatible chat completions endpoint.
+
+    Supports both streaming (stream=true) and non-streaming modes.
+
+    Tool calling modes:
+    - Client-side: When 'tools' is provided in the request, tool_calls are
+      returned in the response for the client to execute (standard OpenAI flow).
+    - Server-side: When no 'tools' in request but server tools are enabled,
+      tools are executed server-side and the final response is returned.
+    """
+    if state.shutdown_requested:
+        raise HTTPException(status_code=503, detail="Server shutting down")
+
+    messages = _convert_oai_messages(request.messages)
+
+    # Determine tool mode
+    client_side_tools = request.tools is not None
+    server_side_tools = not client_side_tools and state.tools_enabled
+
+    active_tools = None
+    if client_side_tools:
+        active_tools = request.tools
+    elif server_side_tools:
+        active_tools = [
+            {"type": "function", "function": t}
+            for t in tools.get_available_tools()
+        ]
+
+    # --- Streaming ---
+    if request.stream:
+        return StreamingResponse(
+            _v1_generate_stream(request, messages, active_tools, server_side_tools),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    # --- Non-streaming ---
+    try:
+        state.is_generating = True
+
+        if server_side_tools:
+            return await _v1_server_tool_loop(request, messages, active_tools)
+
+        # Single call: client-side tools or no tools — proxy to llama-server
+        payload = _build_v1_payload(request, messages, active_tools)
+        llama_url = state.llama_manager.server_url
+
+        response = requests.post(
+            f"{llama_url}/v1/chat/completions",
+            json=payload,
+            timeout=300,
+        )
+
+        if response.status_code != 200:
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=f"Upstream inference error: {response.text}",
+            )
+
+        # llama-server returns OpenAI-format — forward directly
+        return JSONResponse(content=response.json())
+
+    except HTTPException:
+        raise
+    except requests.exceptions.Timeout:
+        raise HTTPException(status_code=504, detail="Request to inference server timed out")
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=503, detail=f"Failed to reach inference server: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error in /v1/chat/completions: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        state.is_generating = False
+
+
+async def _v1_server_tool_loop(
+    request: OAIChatRequest,
+    messages: List[Dict],
+    tools_list: List[Dict],
+) -> JSONResponse:
+    """
+    Execute server-side tool loop and return an OpenAI-format response.
+
+    The model may call tools up to MAX_TOOL_ITERATIONS times.  Tools are
+    executed server-side and the results fed back to the model until it
+    produces a final text response (or the iteration limit is reached).
+    """
+    llama_url = state.llama_manager.server_url
+    completion_id = _make_completion_id()
+    iterations = 0
+    max_iterations = config.MAX_TOOL_ITERATIONS
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    finish_reason = "stop"
+    last_content = ""
+
+    while iterations < max_iterations:
+        iterations += 1
+        logger.info(f"[v1] Server tool loop iteration {iterations}/{max_iterations}")
+
+        payload = _build_v1_payload(request, messages, tools_list)
+
+        resp = requests.post(
+            f"{llama_url}/v1/chat/completions",
+            json=payload,
+            timeout=300,
+        )
+
+        if resp.status_code != 200:
+            raise HTTPException(
+                status_code=resp.status_code,
+                detail=f"Upstream inference error: {resp.text}",
+            )
+
+        result = resp.json()
+        choice = result["choices"][0]
+        message = choice["message"]
+        finish_reason = choice.get("finish_reason", "stop")
+
+        usage = result.get("usage", {})
+        total_prompt_tokens += usage.get("prompt_tokens", 0)
+        total_completion_tokens += usage.get("completion_tokens", 0)
+
+        tool_calls = message.get("tool_calls")
+        last_content = message.get("content") or ""
+
+        if not tool_calls:
+            break
+
+        # Execute tool calls server-side
+        logger.info(f"[v1] Executing {len(tool_calls)} server-side tool call(s)")
+
+        messages.append({
+            "role": "assistant",
+            "content": message.get("content"),
+            "tool_calls": tool_calls,
+        })
+
+        for tc in tool_calls:
+            fn_name = tc["function"]["name"]
+            try:
+                arguments = json.loads(tc["function"]["arguments"])
+            except json.JSONDecodeError:
+                arguments = {}
+
+            logger.info(f"[v1] Tool call: {fn_name}({arguments})")
+
+            try:
+                tool_result = tools.execute_tool(fn_name, arguments)
+            except Exception as e:
+                tool_result = {"error": str(e)}
+                logger.error(f"[v1] Tool execution error: {e}")
+
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc["id"],
+                "content": json.dumps(tool_result),
+            })
+
+    return JSONResponse(content={
+        "id": completion_id,
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": state.current_model_key,
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": last_content,
+                "refusal": None,
+            },
+            "finish_reason": finish_reason,
+            "logprobs": None,
+        }],
+        "usage": {
+            "prompt_tokens": total_prompt_tokens,
+            "completion_tokens": total_completion_tokens,
+            "total_tokens": total_prompt_tokens + total_completion_tokens,
+        },
+        "system_fingerprint": None,
+        "service_tier": None,
+    })
+
+
+async def _v1_generate_stream(
+    request: OAIChatRequest,
+    messages: List[Dict],
+    active_tools: Optional[List[Dict]],
+    server_side_tools: bool,
+) -> AsyncGenerator[str, None]:
+    """
+    Generate an OpenAI-compatible streaming response.
+
+    - Client-side tools / no tools: proxy SSE chunks from llama-server directly.
+    - Server-side tools: run tool loop non-streaming, then stream the final text
+      character-by-character with compliant chunk objects.
+    """
+    try:
+        state.is_generating = True
+        completion_id = _make_completion_id()
+        created = int(time.time())
+        model_name = state.current_model_key
+        include_usage = (
+            request.stream_options is not None
+            and request.stream_options.include_usage
+        )
+
+        if server_side_tools:
+            # ---- Server-side tool execution (buffered, then streamed) ----
+            llama_url = state.llama_manager.server_url
+            iterations = 0
+            max_iterations = config.MAX_TOOL_ITERATIONS
+            final_content = ""
+            total_prompt_tokens = 0
+            total_completion_tokens = 0
+
+            while iterations < max_iterations:
+                iterations += 1
+                payload = _build_v1_payload(request, messages, active_tools)
+
+                resp = requests.post(
+                    f"{llama_url}/v1/chat/completions",
+                    json=payload,
+                    timeout=300,
+                )
+
+                if resp.status_code != 200:
+                    yield f'data: {json.dumps({"id": completion_id, "object": "chat.completion.chunk", "created": created, "model": model_name, "choices": [{"index": 0, "delta": {"content": "[inference error]"}, "finish_reason": "stop"}]})}\n\n'
+                    yield "data: [DONE]\n\n"
+                    return
+
+                result = resp.json()
+                choice = result["choices"][0]
+                message = choice["message"]
+                tool_calls = message.get("tool_calls")
+
+                usage = result.get("usage", {})
+                total_prompt_tokens += usage.get("prompt_tokens", 0)
+                total_completion_tokens += usage.get("completion_tokens", 0)
+
+                if not tool_calls:
+                    final_content = message.get("content", "")
+                    break
+
+                messages.append({
+                    "role": "assistant",
+                    "content": message.get("content"),
+                    "tool_calls": tool_calls,
+                })
+
+                for tc in tool_calls:
+                    fn_name = tc["function"]["name"]
+                    try:
+                        arguments = json.loads(tc["function"]["arguments"])
+                    except json.JSONDecodeError:
+                        arguments = {}
+                    try:
+                        tool_result = tools.execute_tool(fn_name, arguments)
+                    except Exception as e:
+                        tool_result = {"error": str(e)}
+
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": json.dumps(tool_result),
+                    })
+
+            # Stream the final response character-by-character
+            # First chunk: role
+            yield f'data: {json.dumps({"id": completion_id, "object": "chat.completion.chunk", "created": created, "model": model_name, "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]})}\n\n'
+
+            # Content chunks
+            for char in final_content:
+                yield f'data: {json.dumps({"id": completion_id, "object": "chat.completion.chunk", "created": created, "model": model_name, "choices": [{"index": 0, "delta": {"content": char}, "finish_reason": None}]})}\n\n'
+
+            # Finish chunk
+            yield f'data: {json.dumps({"id": completion_id, "object": "chat.completion.chunk", "created": created, "model": model_name, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})}\n\n'
+
+            # Usage chunk (if requested)
+            if include_usage:
+                yield f'data: {json.dumps({"id": completion_id, "object": "chat.completion.chunk", "created": created, "model": model_name, "choices": [], "usage": {"prompt_tokens": total_prompt_tokens, "completion_tokens": total_completion_tokens, "total_tokens": total_prompt_tokens + total_completion_tokens}})}\n\n'
+
+            yield "data: [DONE]\n\n"
+
+        else:
+            # ---- Client-side tools / no tools: proxy from llama-server ----
+            llama_url = state.llama_manager.server_url
+
+            payload = _build_v1_payload(request, messages, active_tools)
+            payload["stream"] = True
+            if include_usage:
+                payload["stream_options"] = {"include_usage": True}
+
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                async with client.stream(
+                    "POST",
+                    f"{llama_url}/v1/chat/completions",
+                    json=payload,
+                ) as response:
+                    if response.status_code != 200:
+                        error_text = await response.aread()
+                        yield f'data: {json.dumps({"error": {"message": f"Upstream inference error: {error_text.decode()}", "type": "server_error", "param": None, "code": None}})}\n\n'
+                        yield "data: [DONE]\n\n"
+                        return
+
+                    async for line in response.aiter_lines():
+                        if line.startswith("data: "):
+                            yield f"{line}\n\n"
+                            if line == "data: [DONE]":
+                                return
+
+    except Exception as e:
+        logger.error(f"[v1] Streaming error: {e}", exc_info=True)
+        yield f'data: {json.dumps({"id": "chatcmpl-error", "object": "chat.completion.chunk", "created": int(time.time()), "model": state.current_model_key, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})}\n\n'
+        yield "data: [DONE]\n\n"
+    finally:
+        state.is_generating = False
+
+
+# ---- /v1/models ----
+
+@app.get("/v1/models")
+async def v1_list_models():
+    """OpenAI-compatible model listing."""
+    models_data = []
+    for key, info in config.get_all_models().items():
+        if info.get("is_finetuned"):
+            owned_by = "local-finetuned"
+        elif "hf_repo" in info:
+            owned_by = "huggingface"
+        else:
+            owned_by = "local"
+
+        models_data.append({
+            "id": key,
+            "object": "model",
+            "created": 0,
+            "owned_by": owned_by,
+        })
+
+    return JSONResponse(content={
+        "object": "list",
+        "data": models_data,
+    })
+
+
+@app.get("/v1/models/{model_id}")
+async def v1_retrieve_model(model_id: str):
+    """OpenAI-compatible single model retrieval."""
+    model_info = config.get_model_info(model_id)
+    if not model_info:
+        raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found")
+
+    if model_info.get("is_finetuned"):
+        owned_by = "local-finetuned"
+    elif "hf_repo" in model_info:
+        owned_by = "huggingface"
+    else:
+        owned_by = "local"
+
+    return JSONResponse(content={
+        "id": model_id,
+        "object": "model",
+        "created": 0,
+        "owned_by": owned_by,
+    })
+
 
 # ============================================================================
 # Main
