@@ -7,6 +7,7 @@ import requests
 import time
 import signal
 import os
+import shutil
 import psutil
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -58,9 +59,12 @@ class LlamaServerManager:
         self.last_use_hf = use_hf
         self.last_ctx_size = ctx_size
 
-        # Validate executable exists
+        # Validate executable exists (supports both absolute paths and PATH lookup)
         executable = self.config['executable']
-        if not os.path.exists(executable):
+        resolved = shutil.which(executable)
+        if resolved:
+            executable = resolved
+        elif not os.path.exists(executable):
             logger.error(f"llama-server executable not found: {executable}")
             return False
 

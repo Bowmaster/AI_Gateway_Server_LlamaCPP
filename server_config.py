@@ -3,6 +3,7 @@ server_config.py - Configuration for AI Lab Server (llama.cpp edition)
 """
 
 import os
+import shutil
 import logging
 from pathlib import Path
 from typing import Dict, Any, Tuple, Optional, List
@@ -221,8 +222,11 @@ _llama_opt = _runtime_config.get("llama_optimization", {})
 
 LLAMA_SERVER_CONFIG = {
     # Path to llama-server executable
-    # Default assumes it's in the same directory as this script
-    "executable": os.getenv("LLAMA_SERVER_PATH", "./llama.cpp/llama-server.exe"),
+    # Searches: LLAMA_SERVER_PATH env var → "llama-server" on PATH → local fallback
+    "executable": os.getenv("LLAMA_SERVER_PATH")
+                  or shutil.which("llama-server")
+                  or ("./llama.cpp/llama-server.exe" if os.name == "nt"
+                      else "./llama.cpp/llama-server"),
 
     "cache_dir": os.getenv("LLAMA_CACHE", "./models"),
 
@@ -643,9 +647,9 @@ def validate_config() -> list:
     """
     issues = []
     
-    # Check if llama-server executable exists
+    # Check if llama-server executable exists (supports PATH lookup)
     executable = LLAMA_SERVER_CONFIG["executable"]
-    if not os.path.exists(executable):
+    if not os.path.exists(executable) and not shutil.which(executable):
         issues.append(f"llama-server executable not found: {executable}")
     
     # Check if models directory exists
