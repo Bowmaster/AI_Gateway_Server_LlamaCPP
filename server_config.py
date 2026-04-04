@@ -364,6 +364,54 @@ MODELS = {
         "usage": "High RAM Server only, use for high-powered, long-running tasks that can perform slower.",
     },
 
+    # -------------------------------------------------------------------------
+    # Google Gemma 4 (Released 2026) — Multimodal, tool calling, 140+ languages
+    # -------------------------------------------------------------------------
+
+    "gemma4-e4b-q4": {
+        "name": "Gemma 4 E4B Instruct Q4_K_M",
+        "hf_repo": "ggml-org/gemma-4-E4B-it-GGUF:Q4_K_M",
+        "description": "Google Gemma 4 E4B: Dense model with 4.5B effective params. Multimodal (text+image+audio), native tool calling.",
+        "context_length": 128000,  # 128K native context
+        "vram_estimate": "~7GB",
+        "recommended": True,
+        "download_url": "https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF",
+        "usage": "GPU sweet spot: General chat, tool calling, multimodal, coding. Fits easily on 16GB GPU with room for long context.",
+    },
+
+    "gemma4-26b-a4b-q4": {
+        "name": "Gemma 4 26B-A4B Instruct Q4_K_M",
+        "hf_repo": "ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_K_M",
+        "description": "Google Gemma 4 26B MoE: 26B total params, only 3.8B active per token. Near-31B quality at fraction of compute.",
+        "context_length": 256000,  # 256K native context
+        "vram_estimate": "~18GB",
+        "recommended": False,
+        "download_url": "https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF",
+        "usage": "MoE efficiency: High quality with fast inference. Tight fit on 16GB GPU (reduce context), ideal for high-RAM CPU servers.",
+    },
+
+    "gemma4-26b-a4b-q8": {
+        "name": "Gemma 4 26B-A4B Instruct Q8_0",
+        "hf_repo": "ggml-org/gemma-4-26B-A4B-it-GGUF:Q8_0",
+        "description": "Google Gemma 4 26B MoE Q8: Higher quality quantization, 3.8B active params per token.",
+        "context_length": 256000,  # 256K native context
+        "vram_estimate": "~28GB",
+        "recommended": False,
+        "download_url": "https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF",
+        "usage": "High RAM Server: Best quality/speed ratio for CPU inference. MoE means fast generation despite 26B total size.",
+    },
+
+    "gemma4-31b-q4": {
+        "name": "Gemma 4 31B Instruct Q4_K_M",
+        "hf_repo": "ggml-org/gemma-4-31B-it-GGUF:Q4_K_M",
+        "description": "Google Gemma 4 31B: Full dense model, highest quality. Multimodal, native tool calling, 256K context.",
+        "context_length": 256000,  # 256K native context
+        "vram_estimate": "~22GB",
+        "recommended": False,
+        "download_url": "https://huggingface.co/ggml-org/gemma-4-31B-it-GGUF",
+        "usage": "High RAM Server only: Maximum quality dense model. Requires 20GB+ RAM minimum, benefits from 64GB+.",
+    },
+
     "llama3.2-3b-q4": {
         "name": "Llama-3.2-3B-Instruct Q4_K_M",
         "description": "Meta's Llama 3.2 3B: Small, fast model for testing",
