@@ -33,6 +33,12 @@ logger = logging.getLogger(__name__)
 HOST = "0.0.0.0"  # Listen on all interfaces
 PORT = 8080
 
+# Optional API key authentication
+# Set via environment variable API_KEY to enable. When set, all requests
+# must include an "Authorization: Bearer <key>" header.
+# Leave unset or empty to disable authentication (open access).
+API_KEY = os.getenv("API_KEY", "").strip() or None
+
 # ============================================================================
 # Hardware Detection & Auto-Configuration
 # ============================================================================
@@ -104,16 +110,28 @@ def get_runtime_config() -> Tuple[Dict[str, Any], Dict[str, Any]]:
     # Apply environment variable overrides (highest priority)
     env_overrides = {}
     if os.getenv("N_GPU_LAYERS"):
-        env_overrides["n_gpu_layers"] = int(os.getenv("N_GPU_LAYERS"))
-        logger.info(f"Environment override: N_GPU_LAYERS={env_overrides['n_gpu_layers']}")
+        val = int(os.getenv("N_GPU_LAYERS"))
+        if val < -1 or val > 200:
+            logger.warning(f"N_GPU_LAYERS={val} out of range [-1, 200], clamping")
+            val = max(-1, min(200, val))
+        env_overrides["n_gpu_layers"] = val
+        logger.info(f"Environment override: N_GPU_LAYERS={val}")
 
     if os.getenv("CTX_SIZE"):
-        env_overrides["ctx_size"] = int(os.getenv("CTX_SIZE"))
-        logger.info(f"Environment override: CTX_SIZE={env_overrides['ctx_size']}")
+        val = int(os.getenv("CTX_SIZE"))
+        if val < 512 or val > 1048576:
+            logger.warning(f"CTX_SIZE={val} out of range [512, 1048576], clamping")
+            val = max(512, min(1048576, val))
+        env_overrides["ctx_size"] = val
+        logger.info(f"Environment override: CTX_SIZE={val}")
 
     if os.getenv("THREADS"):
-        env_overrides["threads"] = int(os.getenv("THREADS"))
-        logger.info(f"Environment override: THREADS={env_overrides['threads']}")
+        val = int(os.getenv("THREADS"))
+        if val < 1 or val > 512:
+            logger.warning(f"THREADS={val} out of range [1, 512], clamping")
+            val = max(1, min(512, val))
+        env_overrides["threads"] = val
+        logger.info(f"Environment override: THREADS={val}")
 
     # CPU optimization env var overrides
     if os.getenv("NUMA_MODE"):
@@ -125,16 +143,24 @@ def get_runtime_config() -> Tuple[Dict[str, Any], Dict[str, Any]]:
         logger.info(f"Environment override: NUMA_MODE={val}")
 
     if os.getenv("BATCH_SIZE"):
+        val = int(os.getenv("BATCH_SIZE"))
+        if val < 1 or val > 16384:
+            logger.warning(f"BATCH_SIZE={val} out of range [1, 16384], clamping")
+            val = max(1, min(16384, val))
         cpu_opt = config.get("cpu_optimization", {})
-        cpu_opt["batch_size"] = int(os.getenv("BATCH_SIZE"))
+        cpu_opt["batch_size"] = val
         config["cpu_optimization"] = cpu_opt
-        logger.info(f"Environment override: BATCH_SIZE={cpu_opt['batch_size']}")
+        logger.info(f"Environment override: BATCH_SIZE={val}")
 
     if os.getenv("UBATCH_SIZE"):
+        val = int(os.getenv("UBATCH_SIZE"))
+        if val < 1 or val > 16384:
+            logger.warning(f"UBATCH_SIZE={val} out of range [1, 16384], clamping")
+            val = max(1, min(16384, val))
         cpu_opt = config.get("cpu_optimization", {})
-        cpu_opt["ubatch_size"] = int(os.getenv("UBATCH_SIZE"))
+        cpu_opt["ubatch_size"] = val
         config["cpu_optimization"] = cpu_opt
-        logger.info(f"Environment override: UBATCH_SIZE={cpu_opt['ubatch_size']}")
+        logger.info(f"Environment override: UBATCH_SIZE={val}")
 
     if os.getenv("MLOCK"):
         val = os.getenv("MLOCK").lower()
@@ -144,15 +170,22 @@ def get_runtime_config() -> Tuple[Dict[str, Any], Dict[str, Any]]:
         logger.info(f"Environment override: MLOCK={cpu_opt['mlock']}")
 
     if os.getenv("THREADS_BATCH"):
+        val = int(os.getenv("THREADS_BATCH"))
+        if val < 1 or val > 512:
+            logger.warning(f"THREADS_BATCH={val} out of range [1, 512], clamping")
+            val = max(1, min(512, val))
         cpu_opt = config.get("cpu_optimization", {})
-        cpu_opt["threads_batch"] = int(os.getenv("THREADS_BATCH"))
+        cpu_opt["threads_batch"] = val
         config["cpu_optimization"] = cpu_opt
-        logger.info(f"Environment override: THREADS_BATCH={cpu_opt['threads_batch']}")
+        logger.info(f"Environment override: THREADS_BATCH={val}")
 
     if os.getenv("FLASH_ATTN"):
         val = os.getenv("FLASH_ATTN").lower()
         cpu_opt = config.get("cpu_optimization", {})
-        cpu_opt["flash_attn"] = val in ("1", "true", "on", "yes")
+        if val in ("auto",):
+            cpu_opt["flash_attn"] = "auto"
+        else:
+            cpu_opt["flash_attn"] = val in ("1", "true", "on", "yes")
         config["cpu_optimization"] = cpu_opt
         logger.info(f"Environment override: FLASH_ATTN={cpu_opt['flash_attn']}")
 
@@ -209,8 +242,43 @@ LLAMA_SERVER_CONFIG = {
     "ubatch_size": _cpu_opt.get("ubatch_size"),        # micro-batch size
     "mlock": _cpu_opt.get("mlock", False),             # lock model in RAM (prevents paging)
     "threads_batch": _cpu_opt.get("threads_batch"),    # threads for prompt eval (can use HT)
-    "flash_attn": _cpu_opt.get("flash_attn", False),  # flash attention (reduces mem reads)
+    "flash_attn": _cpu_opt.get("flash_attn", "auto"), # flash attention: True, False, or "auto"
     "no_mmap": _cpu_opt.get("no_mmap", False),         # preload model (no memory-mapping)
+
+    # --- llama.cpp optimization flags (2025-2026 features) ---
+
+    # KV cache quantization — reduces VRAM/RAM usage for longer contexts
+    # Options: None (default f16), "f32", "f16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1"
+    # Requires flash_attn to be effective. Recommended: k=q8_0, v=q4_0 for GPU
+    # Override with: CACHE_TYPE_K, CACHE_TYPE_V
+    "cache_type_k": os.getenv("CACHE_TYPE_K") or None,
+    "cache_type_v": os.getenv("CACHE_TYPE_V") or None,
+
+    # Auto-fit memory management — lets llama-server auto-tune GPU layers and context
+    # to fit within available VRAM. Replaces manual -ngl tuning.
+    # Options: None (use llama-server default, which is "on"), "on", "off"
+    # Override with: FIT_MODE; FIT_TARGET sets reserved VRAM margin in MiB (default 1024)
+    "fit_mode": os.getenv("FIT_MODE") or None,
+    "fit_target": int(os.getenv("FIT_TARGET")) if os.getenv("FIT_TARGET") else None,
+
+    # Speculative decoding — use a small draft model for faster generation
+    # draft_model: path to a small GGUF (e.g. 0.5B) or HF repo string
+    # draft_max: max draft tokens per step (default 16)
+    # spec_type: built-in speculation without draft model (e.g. "ngram-cache")
+    # Override with: DRAFT_MODEL, DRAFT_MAX, SPEC_TYPE
+    "draft_model": os.getenv("DRAFT_MODEL") or None,
+    "draft_max": int(os.getenv("DRAFT_MAX")) if os.getenv("DRAFT_MAX") else None,
+    "spec_type": os.getenv("SPEC_TYPE") or None,
+
+    # Native idle sleep — llama-server unloads model after N seconds of inactivity
+    # Set to -1 to disable (default). When set, supplements the Python-level idle unload.
+    # Override with: SLEEP_IDLE_SECONDS
+    "sleep_idle_seconds": int(os.getenv("SLEEP_IDLE_SECONDS")) if os.getenv("SLEEP_IDLE_SECONDS") else None,
+
+    # NUMA launch prefix — prepend numactl command for multi-socket systems
+    # e.g. "numactl --interleave=all" for even memory distribution across NUMA nodes
+    # Override with: NUMA_PREFIX
+    "numa_prefix": os.getenv("NUMA_PREFIX") or None,
 
     # Auto-start llama-server when Python server starts
     "auto_start": True,

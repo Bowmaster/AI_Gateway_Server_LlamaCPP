@@ -212,13 +212,14 @@ def measure_http_latency(hostname: str) -> dict:
 def _is_protected_path(path: str) -> bool:
     """
     Check if a path is a protected system directory.
-    
+    Resolves symlinks before checking to prevent symlink-based traversal.
+
     Protected paths:
     - Windows: C:\Windows, C:\Program Files, C:\Program Files (x86), C:\
-    - Linux: /, /etc, /proc, /sbin, /boot, /sys, /dev
+    - Linux: /, /etc, /proc, /sbin, /boot, /sys, /dev, /usr, /var
     """
-    # Normalize path
-    path = os.path.abspath(path)
+    # Resolve symlinks first, then normalize — prevents symlink-based bypass
+    path = os.path.realpath(path)
     
     system_protected = {
         "Windows": [
@@ -234,7 +235,9 @@ def _is_protected_path(path: str) -> bool:
             "/sbin",
             "/boot",
             "/sys",
-            "/dev"
+            "/dev",
+            "/usr",
+            "/var"
         ]
     }
     
@@ -267,6 +270,7 @@ def _normalize_path(path: str) -> str:
 
     Features:
     - Converts relative paths to absolute using current working directory
+    - Resolves symlinks to prevent symlink-based path traversal
     - Handles mixed path separators (/ and \\)
     - Expands user home directory (~)
     - Normalizes path for the current OS
@@ -275,19 +279,19 @@ def _normalize_path(path: str) -> str:
         path: Relative or absolute file path
 
     Returns:
-        Absolute normalized path for current OS
+        Absolute, symlink-resolved path for current OS
     """
     # Expand user home directory if present (~)
     path = os.path.expanduser(path)
 
-    # If path is already absolute, just normalize it
+    # If path is already absolute, resolve symlinks and normalize
     if os.path.isabs(path):
-        return os.path.normpath(path)
+        return os.path.realpath(path)
 
     # Otherwise, resolve relative to current working directory
     cwd = os.getcwd()
     absolute_path = os.path.join(cwd, path)
-    return os.path.normpath(absolute_path)
+    return os.path.realpath(absolute_path)
 
 @tool(
     name="read_file",

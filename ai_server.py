@@ -5,7 +5,7 @@ FastAPI server that manages llama-server and provides chat interface
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Dict, Optional, Any, AsyncGenerator, Union
 import logging
 import os
@@ -57,6 +57,39 @@ app = FastAPI(
 )
 
 # ============================================================================
+# Optional API Key Authentication
+# ============================================================================
+
+if config.API_KEY:
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse as StarletteJSONResponse
+    import secrets
+
+    class APIKeyMiddleware(BaseHTTPMiddleware):
+        """Validates Bearer token on all requests when API_KEY is configured."""
+        async def dispatch(self, request: Request, call_next):
+            # Allow docs/openapi without auth
+            if request.url.path in ("/docs", "/openapi.json", "/redoc"):
+                return await call_next(request)
+            auth = request.headers.get("Authorization", "")
+            if not auth.startswith("Bearer "):
+                return StarletteJSONResponse(
+                    status_code=401,
+                    content={"detail": "Missing or invalid Authorization header"}
+                )
+            token = auth[len("Bearer "):]
+            if not secrets.compare_digest(token, config.API_KEY):
+                return StarletteJSONResponse(
+                    status_code=403,
+                    content={"detail": "Invalid API key"}
+                )
+            return await call_next(request)
+
+    app.add_middleware(APIKeyMiddleware)
+    logger.info("API key authentication enabled")
+
+# ============================================================================
 # Global State
 # ============================================================================
 
@@ -92,17 +125,17 @@ state = ServerState()
 # ============================================================================
 
 class Message(BaseModel):
-    role: str
-    content: str
+    role: str = Field(..., max_length=20)
+    content: str = Field(..., max_length=100_000)
 
 class ChatRequest(BaseModel):
-    messages: List[Message]
-    system_prompt: Optional[str] = None
-    temperature: Optional[float] = config.DEFAULT_TEMPERATURE
-    max_tokens: Optional[int] = config.DEFAULT_MAX_TOKENS
-    top_p: Optional[float] = config.DEFAULT_TOP_P
-    top_k: Optional[int] = config.DEFAULT_TOP_K
-    repeat_penalty: Optional[float] = config.DEFAULT_REPEAT_PENALTY
+    messages: List[Message] = Field(..., max_length=200)
+    system_prompt: Optional[str] = Field(None, max_length=10_000)
+    temperature: Optional[float] = Field(config.DEFAULT_TEMPERATURE, ge=0.0, le=2.0)
+    max_tokens: Optional[int] = Field(config.DEFAULT_MAX_TOKENS, ge=1, le=32768)
+    top_p: Optional[float] = Field(config.DEFAULT_TOP_P, ge=0.0, le=1.0)
+    top_k: Optional[int] = Field(config.DEFAULT_TOP_K, ge=0)
+    repeat_penalty: Optional[float] = Field(config.DEFAULT_REPEAT_PENALTY, ge=0.0, le=3.0)
     enable_tools: Optional[bool] = None
 
 class ChatResponse(BaseModel):
@@ -494,15 +527,16 @@ def call_llama_server(messages: List[Dict], **kwargs) -> Dict:
             logger.error(f"llama-server returned error: {response.status_code} - {response.text}")
             raise HTTPException(
                 status_code=response.status_code,
-                detail=f"llama-server error: {response.text}"
+                detail="Inference engine returned an error"
             )
-        
+
         return response.json()
-        
+
     except requests.exceptions.Timeout:
         raise HTTPException(status_code=504, detail="Request to llama-server timed out")
     except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=503, detail=f"Failed to reach llama-server: {str(e)}")
+        logger.error(f"Failed to reach llama-server: {e}")
+        raise HTTPException(status_code=503, detail="Failed to reach inference engine")
 
 
 async def call_llama_server_streaming(
@@ -546,7 +580,8 @@ async def call_llama_server_streaming(
             ) as response:
                 if response.status_code != 200:
                     error_text = await response.aread()
-                    yield f'data: {{"error": "llama-server error: {error_text.decode()}"}}\n\n'
+                    logger.error(f"llama-server streaming error: {response.status_code} - {error_text.decode()}")
+                    yield f'data: {{"error": "Inference engine returned an error"}}\n\n'
                     return
 
                 async for line in response.aiter_lines():
@@ -563,7 +598,7 @@ async def call_llama_server_streaming(
         yield f'data: {{"error": "Request to llama-server timed out"}}\n\n'
     except Exception as e:
         logger.error(f"Streaming error: {e}", exc_info=True)
-        yield f'data: {{"error": "Streaming error: {str(e)}"}}\n\n'
+        yield f'data: {{"error": "An internal streaming error occurred"}}\n\n'
 
 
 # ============================================================================
@@ -985,9 +1020,11 @@ async def switch_model(request: ModelSwitchRequest):
         else:
             raise HTTPException(status_code=500, detail="Failed to switch model")
             
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error switching model: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to switch model")
 
 @app.post("/chat", response_model=Union[ChatResponse, ApprovalRequiredResponse])
 @require_llama_server
@@ -1222,7 +1259,7 @@ async def chat(request: ChatRequest):
         raise
     except Exception as e:
         logger.error(f"Error in chat endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="An internal error occurred during chat processing")
     finally:
         state.is_generating = False
 
@@ -1444,7 +1481,7 @@ async def approve_tools(approval_request: ChatApprovalRequest):
         raise
     except Exception as e:
         logger.error(f"Error in approval endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="An internal error occurred during tool approval")
     finally:
         state.is_generating = False
 
