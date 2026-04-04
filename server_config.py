@@ -216,6 +216,9 @@ _runtime_config, _hardware_profile = get_runtime_config()
 # Extract CPU optimization settings (only present for CPU modes)
 _cpu_opt = _runtime_config.get("cpu_optimization", {})
 
+# Extract llama.cpp optimization settings (new features: KV quant, fit, speculative, etc.)
+_llama_opt = _runtime_config.get("llama_optimization", {})
+
 LLAMA_SERVER_CONFIG = {
     # Path to llama-server executable
     # Default assumes it's in the same directory as this script
@@ -249,26 +252,26 @@ LLAMA_SERVER_CONFIG = {
 
     # KV cache quantization — reduces VRAM/RAM usage for longer contexts
     # Options: None (default f16), "f32", "f16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1"
-    # Requires flash_attn to be effective. Recommended: k=q8_0, v=q4_0 for GPU
+    # Requires flash_attn to be effective. Auto-configured by hardware detector.
     # Override with: CACHE_TYPE_K, CACHE_TYPE_V
-    "cache_type_k": os.getenv("CACHE_TYPE_K") or None,
-    "cache_type_v": os.getenv("CACHE_TYPE_V") or None,
+    "cache_type_k": os.getenv("CACHE_TYPE_K") or _llama_opt.get("cache_type_k"),
+    "cache_type_v": os.getenv("CACHE_TYPE_V") or _llama_opt.get("cache_type_v"),
 
     # Auto-fit memory management — lets llama-server auto-tune GPU layers and context
-    # to fit within available VRAM. Replaces manual -ngl tuning.
+    # to fit within available VRAM. Replaces manual -ngl tuning. Auto-configured for GPU modes.
     # Options: None (use llama-server default, which is "on"), "on", "off"
     # Override with: FIT_MODE; FIT_TARGET sets reserved VRAM margin in MiB (default 1024)
-    "fit_mode": os.getenv("FIT_MODE") or None,
+    "fit_mode": os.getenv("FIT_MODE") or _llama_opt.get("fit_mode"),
     "fit_target": int(os.getenv("FIT_TARGET")) if os.getenv("FIT_TARGET") else None,
 
     # Speculative decoding — use a small draft model for faster generation
     # draft_model: path to a small GGUF (e.g. 0.5B) or HF repo string
     # draft_max: max draft tokens per step (default 16)
     # spec_type: built-in speculation without draft model (e.g. "ngram-cache")
-    # Override with: DRAFT_MODEL, DRAFT_MAX, SPEC_TYPE
-    "draft_model": os.getenv("DRAFT_MODEL") or None,
-    "draft_max": int(os.getenv("DRAFT_MAX")) if os.getenv("DRAFT_MAX") else None,
-    "spec_type": os.getenv("SPEC_TYPE") or None,
+    # Auto-configured for CPU high-RAM mode (ngram-cache). Override with env vars.
+    "draft_model": os.getenv("DRAFT_MODEL") or _llama_opt.get("draft_model"),
+    "draft_max": int(os.getenv("DRAFT_MAX")) if os.getenv("DRAFT_MAX") else _llama_opt.get("draft_max"),
+    "spec_type": os.getenv("SPEC_TYPE") or _llama_opt.get("spec_type"),
 
     # Native idle sleep — llama-server unloads model after N seconds of inactivity
     # Set to -1 to disable (default). When set, supplements the Python-level idle unload.
@@ -277,8 +280,8 @@ LLAMA_SERVER_CONFIG = {
 
     # NUMA launch prefix — prepend numactl command for multi-socket systems
     # e.g. "numactl --interleave=all" for even memory distribution across NUMA nodes
-    # Override with: NUMA_PREFIX
-    "numa_prefix": os.getenv("NUMA_PREFIX") or None,
+    # Auto-configured for multi-socket CPU systems. Override with: NUMA_PREFIX
+    "numa_prefix": os.getenv("NUMA_PREFIX") or _llama_opt.get("numa_prefix"),
 
     # Auto-start llama-server when Python server starts
     "auto_start": True,

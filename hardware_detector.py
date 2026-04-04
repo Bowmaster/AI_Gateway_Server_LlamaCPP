@@ -512,7 +512,19 @@ def generate_optimal_config(hardware_info: Dict[str, Any]) -> Dict[str, Any]:
             "ctx_size": ctx_size,
             "threads": None,  # GPU doesn't need thread config
             "mode": "gpu_primary",
-            "reasoning": f"GPU with {vram_gb}GB VRAM detected - using full GPU acceleration"
+            "reasoning": f"GPU with {vram_gb}GB VRAM detected - using full GPU acceleration",
+            "cpu_optimization": {
+                # Flash attention auto-detects model compatibility
+                "flash_attn": "auto",
+            },
+            "llama_optimization": {
+                # KV cache quantization: reduces VRAM usage, enables longer contexts
+                # q8_0 keys preserve quality; q4_0 values save the most VRAM
+                "cache_type_k": "q8_0",
+                "cache_type_v": "q4_0",
+                # Auto-fit: llama-server auto-tunes GPU layers + context to fit VRAM
+                "fit_mode": "on",
+            },
         }
 
     elif has_gpu and 4 <= vram_gb < 8:
@@ -525,7 +537,17 @@ def generate_optimal_config(hardware_info: Dict[str, Any]) -> Dict[str, Any]:
             "ctx_size": ctx_size,
             "threads": None,
             "mode": "gpu_limited",
-            "reasoning": f"GPU with {vram_gb}GB VRAM detected - may need hybrid mode for large models"
+            "reasoning": f"GPU with {vram_gb}GB VRAM detected - may need hybrid mode for large models",
+            "cpu_optimization": {
+                "flash_attn": "auto",
+            },
+            "llama_optimization": {
+                # More aggressive KV quantization for limited VRAM
+                "cache_type_k": "q4_0",
+                "cache_type_v": "q4_0",
+                # Auto-fit is especially valuable with limited VRAM
+                "fit_mode": "on",
+            },
         }
 
     elif has_gpu and vram_gb < 4 and ram_gb > 64:
@@ -539,7 +561,15 @@ def generate_optimal_config(hardware_info: Dict[str, Any]) -> Dict[str, Any]:
             "ctx_size": ctx_size,
             "threads": threads,
             "mode": "hybrid_ram_optimized",
-            "reasoning": f"Small GPU ({vram_gb}GB) + high RAM ({ram_gb}GB) - hybrid mode with large context"
+            "reasoning": f"Small GPU ({vram_gb}GB) + high RAM ({ram_gb}GB) - hybrid mode with large context",
+            "cpu_optimization": {
+                "flash_attn": "auto",
+            },
+            "llama_optimization": {
+                "cache_type_k": "q4_0",
+                "cache_type_v": "q4_0",
+                "fit_mode": "on",
+            },
         }
 
     elif not has_gpu and ram_gb >= 128:
@@ -565,15 +595,26 @@ def generate_optimal_config(hardware_info: Dict[str, Any]) -> Dict[str, Any]:
                 # NUMA distribute uses POSIX-specific APIs in llama.cpp; crashes on Windows
                 "numa_mode": ("distribute" if is_multi_socket and platform.system() != "Windows" else None),
                 "batch_size": 512,
-                "ubatch_size": 512,
+                "ubatch_size": 256,  # Smaller ubatch works better on CPU (no GPU parallelism)
                 "mlock": True,
                 # Prefill uses all logical cores (HT helps for parallel prompt eval)
                 "threads_batch": logical_cores,
-                # Flash attention is a GPU VRAM optimization; not beneficial on CPU
-                "flash_attn": False,
+                # Flash attention "auto" lets llama-server decide; required for KV cache quant
+                "flash_attn": "auto",
                 # Preload entire model into RAM (avoids mmap page faults, safe with 128GB+)
                 "no_mmap": True,
-            }
+            },
+            "llama_optimization": {
+                # KV cache quantization extends context within available RAM
+                "cache_type_k": "q4_0",
+                "cache_type_v": "q4_0",
+                # NUMA prefix for even memory distribution across sockets
+                "numa_prefix": ("numactl --interleave=all"
+                                if is_multi_socket and platform.system() != "Windows"
+                                else None),
+                # n-gram speculative decoding: free speedup, no draft model needed
+                "spec_type": "ngram-cache",
+            },
         }
 
     elif not has_gpu and ram_gb < 128:
@@ -592,13 +633,18 @@ def generate_optimal_config(hardware_info: Dict[str, Any]) -> Dict[str, Any]:
             "cpu_optimization": {
                 "numa_mode": None,
                 "batch_size": 512,
-                "ubatch_size": 512,
+                "ubatch_size": 256,  # Smaller ubatch works better on CPU
                 "mlock": ram_gb >= 32,
                 "threads_batch": logical_cores,
-                # Flash attention is a GPU VRAM optimization; not beneficial on CPU
-                "flash_attn": False,
+                # Flash attention "auto" lets llama-server decide; required for KV cache quant
+                "flash_attn": "auto",
                 "no_mmap": False,  # Don't preload on lower-RAM systems
-            }
+            },
+            "llama_optimization": {
+                # KV cache quantization helps even on CPU for longer contexts
+                "cache_type_k": "q4_0",
+                "cache_type_v": "q4_0",
+            },
         }
 
     else:
