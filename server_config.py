@@ -3,6 +3,7 @@ server_config.py - Configuration for AI Lab Server (llama.cpp edition)
 """
 
 import os
+import shutil
 import logging
 from pathlib import Path
 from typing import Dict, Any, Tuple, Optional, List
@@ -32,6 +33,12 @@ logger = logging.getLogger(__name__)
 # Client-facing API server
 HOST = "0.0.0.0"  # Listen on all interfaces
 PORT = 8080
+
+# Optional API key authentication
+# Set via environment variable API_KEY to enable. When set, all requests
+# must include an "Authorization: Bearer <key>" header.
+# Leave unset or empty to disable authentication (open access).
+API_KEY = os.getenv("API_KEY", "").strip() or None
 
 # ============================================================================
 # Hardware Detection & Auto-Configuration
@@ -104,16 +111,28 @@ def get_runtime_config() -> Tuple[Dict[str, Any], Dict[str, Any]]:
     # Apply environment variable overrides (highest priority)
     env_overrides = {}
     if os.getenv("N_GPU_LAYERS"):
-        env_overrides["n_gpu_layers"] = int(os.getenv("N_GPU_LAYERS"))
-        logger.info(f"Environment override: N_GPU_LAYERS={env_overrides['n_gpu_layers']}")
+        val = int(os.getenv("N_GPU_LAYERS"))
+        if val < -1 or val > 200:
+            logger.warning(f"N_GPU_LAYERS={val} out of range [-1, 200], clamping")
+            val = max(-1, min(200, val))
+        env_overrides["n_gpu_layers"] = val
+        logger.info(f"Environment override: N_GPU_LAYERS={val}")
 
     if os.getenv("CTX_SIZE"):
-        env_overrides["ctx_size"] = int(os.getenv("CTX_SIZE"))
-        logger.info(f"Environment override: CTX_SIZE={env_overrides['ctx_size']}")
+        val = int(os.getenv("CTX_SIZE"))
+        if val < 512 or val > 1048576:
+            logger.warning(f"CTX_SIZE={val} out of range [512, 1048576], clamping")
+            val = max(512, min(1048576, val))
+        env_overrides["ctx_size"] = val
+        logger.info(f"Environment override: CTX_SIZE={val}")
 
     if os.getenv("THREADS"):
-        env_overrides["threads"] = int(os.getenv("THREADS"))
-        logger.info(f"Environment override: THREADS={env_overrides['threads']}")
+        val = int(os.getenv("THREADS"))
+        if val < 1 or val > 512:
+            logger.warning(f"THREADS={val} out of range [1, 512], clamping")
+            val = max(1, min(512, val))
+        env_overrides["threads"] = val
+        logger.info(f"Environment override: THREADS={val}")
 
     # CPU optimization env var overrides
     if os.getenv("NUMA_MODE"):
@@ -125,16 +144,24 @@ def get_runtime_config() -> Tuple[Dict[str, Any], Dict[str, Any]]:
         logger.info(f"Environment override: NUMA_MODE={val}")
 
     if os.getenv("BATCH_SIZE"):
+        val = int(os.getenv("BATCH_SIZE"))
+        if val < 1 or val > 16384:
+            logger.warning(f"BATCH_SIZE={val} out of range [1, 16384], clamping")
+            val = max(1, min(16384, val))
         cpu_opt = config.get("cpu_optimization", {})
-        cpu_opt["batch_size"] = int(os.getenv("BATCH_SIZE"))
+        cpu_opt["batch_size"] = val
         config["cpu_optimization"] = cpu_opt
-        logger.info(f"Environment override: BATCH_SIZE={cpu_opt['batch_size']}")
+        logger.info(f"Environment override: BATCH_SIZE={val}")
 
     if os.getenv("UBATCH_SIZE"):
+        val = int(os.getenv("UBATCH_SIZE"))
+        if val < 1 or val > 16384:
+            logger.warning(f"UBATCH_SIZE={val} out of range [1, 16384], clamping")
+            val = max(1, min(16384, val))
         cpu_opt = config.get("cpu_optimization", {})
-        cpu_opt["ubatch_size"] = int(os.getenv("UBATCH_SIZE"))
+        cpu_opt["ubatch_size"] = val
         config["cpu_optimization"] = cpu_opt
-        logger.info(f"Environment override: UBATCH_SIZE={cpu_opt['ubatch_size']}")
+        logger.info(f"Environment override: UBATCH_SIZE={val}")
 
     if os.getenv("MLOCK"):
         val = os.getenv("MLOCK").lower()
@@ -144,15 +171,22 @@ def get_runtime_config() -> Tuple[Dict[str, Any], Dict[str, Any]]:
         logger.info(f"Environment override: MLOCK={cpu_opt['mlock']}")
 
     if os.getenv("THREADS_BATCH"):
+        val = int(os.getenv("THREADS_BATCH"))
+        if val < 1 or val > 512:
+            logger.warning(f"THREADS_BATCH={val} out of range [1, 512], clamping")
+            val = max(1, min(512, val))
         cpu_opt = config.get("cpu_optimization", {})
-        cpu_opt["threads_batch"] = int(os.getenv("THREADS_BATCH"))
+        cpu_opt["threads_batch"] = val
         config["cpu_optimization"] = cpu_opt
-        logger.info(f"Environment override: THREADS_BATCH={cpu_opt['threads_batch']}")
+        logger.info(f"Environment override: THREADS_BATCH={val}")
 
     if os.getenv("FLASH_ATTN"):
         val = os.getenv("FLASH_ATTN").lower()
         cpu_opt = config.get("cpu_optimization", {})
-        cpu_opt["flash_attn"] = val in ("1", "true", "on", "yes")
+        if val in ("auto",):
+            cpu_opt["flash_attn"] = "auto"
+        else:
+            cpu_opt["flash_attn"] = val in ("1", "true", "on", "yes")
         config["cpu_optimization"] = cpu_opt
         logger.info(f"Environment override: FLASH_ATTN={cpu_opt['flash_attn']}")
 
@@ -183,10 +217,16 @@ _runtime_config, _hardware_profile = get_runtime_config()
 # Extract CPU optimization settings (only present for CPU modes)
 _cpu_opt = _runtime_config.get("cpu_optimization", {})
 
+# Extract llama.cpp optimization settings (new features: KV quant, fit, speculative, etc.)
+_llama_opt = _runtime_config.get("llama_optimization", {})
+
 LLAMA_SERVER_CONFIG = {
     # Path to llama-server executable
-    # Default assumes it's in the same directory as this script
-    "executable": os.getenv("LLAMA_SERVER_PATH", "./llama.cpp/llama-server.exe"),
+    # Searches: LLAMA_SERVER_PATH env var → "llama-server" on PATH → local fallback
+    "executable": os.getenv("LLAMA_SERVER_PATH")
+                  or shutil.which("llama-server")
+                  or ("./llama.cpp/llama-server.exe" if os.name == "nt"
+                      else "./llama.cpp/llama-server"),
 
     "cache_dir": os.getenv("LLAMA_CACHE", "./models"),
 
@@ -209,8 +249,43 @@ LLAMA_SERVER_CONFIG = {
     "ubatch_size": _cpu_opt.get("ubatch_size"),        # micro-batch size
     "mlock": _cpu_opt.get("mlock", False),             # lock model in RAM (prevents paging)
     "threads_batch": _cpu_opt.get("threads_batch"),    # threads for prompt eval (can use HT)
-    "flash_attn": _cpu_opt.get("flash_attn", False),  # flash attention (reduces mem reads)
+    "flash_attn": _cpu_opt.get("flash_attn", "auto"), # flash attention: True, False, or "auto"
     "no_mmap": _cpu_opt.get("no_mmap", False),         # preload model (no memory-mapping)
+
+    # --- llama.cpp optimization flags (2025-2026 features) ---
+
+    # KV cache quantization — reduces VRAM/RAM usage for longer contexts
+    # Options: None (default f16), "f32", "f16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1"
+    # Requires flash_attn to be effective. Auto-configured by hardware detector.
+    # Override with: CACHE_TYPE_K, CACHE_TYPE_V
+    "cache_type_k": os.getenv("CACHE_TYPE_K") or _llama_opt.get("cache_type_k"),
+    "cache_type_v": os.getenv("CACHE_TYPE_V") or _llama_opt.get("cache_type_v"),
+
+    # Auto-fit memory management — lets llama-server auto-tune GPU layers and context
+    # to fit within available VRAM. Replaces manual -ngl tuning. Auto-configured for GPU modes.
+    # Options: None (use llama-server default, which is "on"), "on", "off"
+    # Override with: FIT_MODE; FIT_TARGET sets reserved VRAM margin in MiB (default 1024)
+    "fit_mode": os.getenv("FIT_MODE") or _llama_opt.get("fit_mode"),
+    "fit_target": int(os.getenv("FIT_TARGET")) if os.getenv("FIT_TARGET") else None,
+
+    # Speculative decoding — use a small draft model for faster generation
+    # draft_model: path to a small GGUF (e.g. 0.5B) or HF repo string
+    # draft_max: max draft tokens per step (default 16)
+    # spec_type: built-in speculation without draft model (e.g. "ngram-cache")
+    # Auto-configured for CPU high-RAM mode (ngram-cache). Override with env vars.
+    "draft_model": os.getenv("DRAFT_MODEL") or _llama_opt.get("draft_model"),
+    "draft_max": int(os.getenv("DRAFT_MAX")) if os.getenv("DRAFT_MAX") else _llama_opt.get("draft_max"),
+    "spec_type": os.getenv("SPEC_TYPE") or _llama_opt.get("spec_type"),
+
+    # Native idle sleep — llama-server unloads model after N seconds of inactivity
+    # Set to -1 to disable (default). When set, supplements the Python-level idle unload.
+    # Override with: SLEEP_IDLE_SECONDS
+    "sleep_idle_seconds": int(os.getenv("SLEEP_IDLE_SECONDS")) if os.getenv("SLEEP_IDLE_SECONDS") else None,
+
+    # NUMA launch prefix — prepend numactl command for multi-socket systems
+    # e.g. "numactl --interleave=all" for even memory distribution across NUMA nodes
+    # Auto-configured for multi-socket CPU systems. Override with: NUMA_PREFIX
+    "numa_prefix": os.getenv("NUMA_PREFIX") or _llama_opt.get("numa_prefix"),
 
     # Auto-start llama-server when Python server starts
     "auto_start": True,
@@ -287,6 +362,54 @@ MODELS = {
         "recommended": False,
         "download_url": "https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct-GGUF",
         "usage": "High RAM Server only, use for high-powered, long-running tasks that can perform slower.",
+    },
+
+    # -------------------------------------------------------------------------
+    # Google Gemma 4 (Released 2026) — Multimodal, tool calling, 140+ languages
+    # -------------------------------------------------------------------------
+
+    "gemma4-e4b-q4": {
+        "name": "Gemma 4 E4B Instruct Q4_K_M",
+        "hf_repo": "ggml-org/gemma-4-E4B-it-GGUF:Q4_K_M",
+        "description": "Google Gemma 4 E4B: Dense model with 4.5B effective params. Multimodal (text+image+audio), native tool calling.",
+        "context_length": 128000,  # 128K native context
+        "vram_estimate": "~7GB",
+        "recommended": True,
+        "download_url": "https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF",
+        "usage": "GPU sweet spot: General chat, tool calling, multimodal, coding. Fits easily on 16GB GPU with room for long context.",
+    },
+
+    "gemma4-26b-a4b-q4": {
+        "name": "Gemma 4 26B-A4B Instruct Q4_K_M",
+        "hf_repo": "ggml-org/gemma-4-26B-A4B-it-GGUF:Q4_K_M",
+        "description": "Google Gemma 4 26B MoE: 26B total params, only 3.8B active per token. Near-31B quality at fraction of compute.",
+        "context_length": 256000,  # 256K native context
+        "vram_estimate": "~18GB",
+        "recommended": False,
+        "download_url": "https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF",
+        "usage": "MoE efficiency: High quality with fast inference. Tight fit on 16GB GPU (reduce context), ideal for high-RAM CPU servers.",
+    },
+
+    "gemma4-26b-a4b-q8": {
+        "name": "Gemma 4 26B-A4B Instruct Q8_0",
+        "hf_repo": "ggml-org/gemma-4-26B-A4B-it-GGUF:Q8_0",
+        "description": "Google Gemma 4 26B MoE Q8: Higher quality quantization, 3.8B active params per token.",
+        "context_length": 256000,  # 256K native context
+        "vram_estimate": "~28GB",
+        "recommended": False,
+        "download_url": "https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF",
+        "usage": "High RAM Server: Best quality/speed ratio for CPU inference. MoE means fast generation despite 26B total size.",
+    },
+
+    "gemma4-31b-q4": {
+        "name": "Gemma 4 31B Instruct Q4_K_M",
+        "hf_repo": "ggml-org/gemma-4-31B-it-GGUF:Q4_K_M",
+        "description": "Google Gemma 4 31B: Full dense model, highest quality. Multimodal, native tool calling, 256K context.",
+        "context_length": 256000,  # 256K native context
+        "vram_estimate": "~22GB",
+        "recommended": False,
+        "download_url": "https://huggingface.co/ggml-org/gemma-4-31B-it-GGUF",
+        "usage": "High RAM Server only: Maximum quality dense model. Requires 20GB+ RAM minimum, benefits from 64GB+.",
     },
 
     "llama3.2-3b-q4": {
@@ -572,9 +695,9 @@ def validate_config() -> list:
     """
     issues = []
     
-    # Check if llama-server executable exists
+    # Check if llama-server executable exists (supports PATH lookup)
     executable = LLAMA_SERVER_CONFIG["executable"]
-    if not os.path.exists(executable):
+    if not os.path.exists(executable) and not shutil.which(executable):
         issues.append(f"llama-server executable not found: {executable}")
     
     # Check if models directory exists

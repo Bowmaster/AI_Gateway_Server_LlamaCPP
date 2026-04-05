@@ -7,6 +7,7 @@ import requests
 import time
 import signal
 import os
+import shutil
 import psutil
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -58,9 +59,12 @@ class LlamaServerManager:
         self.last_use_hf = use_hf
         self.last_ctx_size = ctx_size
 
-        # Validate executable exists
+        # Validate executable exists (supports both absolute paths and PATH lookup)
         executable = self.config['executable']
-        if not os.path.exists(executable):
+        resolved = shutil.which(executable)
+        if resolved:
+            executable = resolved
+        elif not os.path.exists(executable):
             logger.error(f"llama-server executable not found: {executable}")
             return False
 
@@ -120,6 +124,31 @@ class LlamaServerManager:
         if self.config.get('no_mmap'):
             cmd.append("--no-mmap")
 
+        # KV cache quantization (reduces VRAM/RAM for longer contexts)
+        if self.config.get('cache_type_k'):
+            cmd.extend(["--cache-type-k", str(self.config['cache_type_k'])])
+        if self.config.get('cache_type_v'):
+            cmd.extend(["--cache-type-v", str(self.config['cache_type_v'])])
+
+        # Auto-fit memory management (auto-tunes GPU layers + context to fit VRAM)
+        fit_mode = self.config.get('fit_mode')
+        if fit_mode:
+            cmd.extend(["--fit", str(fit_mode)])
+        if self.config.get('fit_target') is not None:
+            cmd.extend(["--fit-target", str(self.config['fit_target'])])
+
+        # Speculative decoding (draft model or n-gram cache)
+        if self.config.get('draft_model'):
+            cmd.extend(["--model-draft", str(self.config['draft_model'])])
+        if self.config.get('draft_max') is not None:
+            cmd.extend(["--draft-max", str(self.config['draft_max'])])
+        if self.config.get('spec_type'):
+            cmd.extend(["--spec-type", str(self.config['spec_type'])])
+
+        # Native idle sleep (llama-server unloads model after N idle seconds)
+        if self.config.get('sleep_idle_seconds') is not None:
+            cmd.extend(["--sleep-idle-seconds", str(self.config['sleep_idle_seconds'])])
+
         # Add any additional args from config
         if self.config.get('additional_args'):
             cmd.extend(self.config['additional_args'])
@@ -140,9 +169,28 @@ class LlamaServerManager:
         if self.config.get('threads_batch'):
             logger.info(f"  Threads (batch/prefill): {self.config['threads_batch']}")
         if self.config.get('flash_attn'):
-            logger.info(f"  Flash Attention: enabled")
+            logger.info(f"  Flash Attention: {self.config['flash_attn']}")
         if self.config.get('no_mmap'):
             logger.info(f"  No MMap (preload): enabled")
+        if self.config.get('cache_type_k'):
+            logger.info(f"  KV Cache Key Type: {self.config['cache_type_k']}")
+        if self.config.get('cache_type_v'):
+            logger.info(f"  KV Cache Value Type: {self.config['cache_type_v']}")
+        if self.config.get('fit_mode'):
+            logger.info(f"  Auto-Fit Memory: {self.config['fit_mode']}")
+        if self.config.get('draft_model'):
+            logger.info(f"  Draft Model: {self.config['draft_model']}")
+        if self.config.get('spec_type'):
+            logger.info(f"  Speculative Type: {self.config['spec_type']}")
+        if self.config.get('sleep_idle_seconds') is not None:
+            logger.info(f"  Native Idle Sleep: {self.config['sleep_idle_seconds']}s")
+
+        # Prepend NUMA launch prefix if configured (e.g. "numactl --interleave=all")
+        numa_prefix = self.config.get('numa_prefix')
+        if numa_prefix:
+            prefix_parts = numa_prefix.split()
+            cmd = prefix_parts + cmd
+            logger.info(f"  NUMA Prefix: {numa_prefix}")
 
         logger.info(f"Starting llama-server with command: {' '.join(cmd)}")
         
