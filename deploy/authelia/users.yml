@@ -1,0 +1,13 @@
+# Example user/group file (file backend). Generate the hash with:
+#   docker run --rm authelia/authelia:4.38 authelia crypto hash generate argon2 --password 'yourpassword'
+# Groups drive access_control rules in configuration.yml.
+
+users:
+  you:
+    displayname: 'You'
+    # Replace with a real argon2id hash (NOT a plaintext password).
+    password: '$argon2id$v=19$m=65536,t=3,p=4$REPLACE_WITH_REAL_HASH'
+    email: 'you@example.com'
+    groups:
+      - admins
+      - ai-users

@@ -1,0 +1,63 @@
+# Phase 1 internal routing. Wildcard cert via DNS-01 (no inbound :80 needed).
+# Reachable only over LAN/WireGuard until Tier C. Streaming-safe (flush_interval).
+#
+# Env: DOMAIN_INTERNAL, ACME_EMAIL, CF_API_TOKEN come from compose .env.
+
+{
+	email {$ACME_EMAIL}
+	# DNS-01 wildcard issuance. Replace 'cloudflare' if using another provider.
+	acme_dns cloudflare {$CF_API_TOKEN}
+}
+
+# Wildcard cert for the whole internal zone.
+*.{$DOMAIN_INTERNAL} {
+	tls {
+		dns cloudflare {$CF_API_TOKEN}
+	}
+
+	# --- API path: native/mobile/IDE/CLI -> LiteLLM (bearer key, NO forward-auth) ---
+	@api host api.{$DOMAIN_INTERNAL}
+	handle @api {
+		reverse_proxy litellm:4000 {
+			flush_interval -1          # CRITICAL: stream SSE token-by-token
+			transport http {
+				read_timeout 600s
+				write_timeout 600s
+			}
+		}
+	}
+
+	# --- Authelia portal ---
+	@auth host auth.{$DOMAIN_INTERNAL}
+	handle @auth {
+		reverse_proxy authelia:9091
+	}
+
+	# --- Web UI path: browser -> Authelia forward-auth (OIDC+MFA) -> Open WebUI ---
+	@chat host chat.{$DOMAIN_INTERNAL}
+	handle @chat {
+		forward_auth authelia:9091 {
+			uri /api/authz/forward-auth
+			# Caddy OVERWRITES these from Authelia's response — clients cannot spoof them.
+			copy_headers Remote-User Remote-Groups Remote-Name Remote-Email
+		}
+		reverse_proxy open-webui:8080 {
+			flush_interval -1
+		}
+	}
+
+	# --- Admin: LiteLLM UI (admins group; VPN-only at the network layer too) ---
+	@litellm host litellm.{$DOMAIN_INTERNAL}
+	handle @litellm {
+		forward_auth authelia:9091 {
+			uri /api/authz/forward-auth
+			copy_headers Remote-User Remote-Groups Remote-Name Remote-Email
+		}
+		reverse_proxy litellm:4000
+	}
+
+	# Default: refuse unknown hostnames.
+	handle {
+		respond "Not found" 404
+	}
+}

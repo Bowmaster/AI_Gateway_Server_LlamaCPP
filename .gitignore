@@ -5,3 +5,9 @@ llama.cpp/*
 .hardware_profile.json
 *.txt
 .conversations
+
+# Deployment secrets & runtime state (never commit real values)
+.env
+deploy/.env
+deploy/**/db.sqlite3
+deploy/**/*.secret

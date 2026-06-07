@@ -1,0 +1,67 @@
+# Authelia 4.38 forward-auth config (skeleton — VALIDATE against your pinned
+# version; 4.38+ relocated several keys vs older releases). Secrets are read
+# from env (AUTHELIA_* in compose .env) via the *_FILE/secret mechanism in
+# production; inline ${ENV} shown here for clarity.
+
+server:
+  address: 'tcp://0.0.0.0:9091'
+
+log:
+  level: info
+
+# --- Authentication: file backend (small homelab). Swap to LDAP if desired. ---
+authentication_backend:
+  file:
+    path: /config/users.yml
+    password:
+      algorithm: argon2
+
+# --- Two ingress hostnames are protected here. The API path (api.*) is NOT
+#     listed because it bypasses Authelia entirely (bearer keys via LiteLLM). ---
+access_control:
+  default_policy: deny
+  rules:
+    # Authelia portal itself
+    - domain: 'auth.{{ env "DOMAIN_INTERNAL" }}'
+      policy: bypass
+    # Web UI: any authenticated ai-users member, MFA required
+    - domain: 'chat.{{ env "DOMAIN_INTERNAL" }}'
+      policy: two_factor
+      subject: ['group:ai-users']
+    # LiteLLM admin UI: admins only, MFA required
+    - domain: 'litellm.{{ env "DOMAIN_INTERNAL" }}'
+      policy: two_factor
+      subject: ['group:admins']
+
+session:
+  name: authelia_session
+  secret: '{{ env "AUTHELIA_SESSION_SECRET" }}'
+  expiration: 1h
+  inactivity: 15m
+  cookies:
+    - domain: '{{ env "DOMAIN_INTERNAL" }}'
+      authelia_url: 'https://auth.{{ env "DOMAIN_INTERNAL" }}'
+  redis:
+    host: redis
+    port: 6379
+    password: '{{ env "AUTHELIA_REDIS_PASSWORD" }}'
+
+storage:
+  encryption_key: '{{ env "AUTHELIA_STORAGE_ENCRYPTION_KEY" }}'
+  local:
+    path: /config/db.sqlite3        # use postgres for multi-instance/HA
+
+# MFA: TOTP + WebAuthn/passkeys. Second factor enforced by access_control above.
+totp:
+  issuer: 'ai.{{ env "DOMAIN_INTERNAL" }}'
+webauthn:
+  display_name: 'AI Lab'
+
+# Dev notifier (writes emails to a file). Swap to SMTP for real password resets.
+notifier:
+  filesystem:
+    filename: /config/notification.txt
+
+identity_validation:
+  reset_password:
+    jwt_secret: '{{ env "AUTHELIA_JWT_SECRET" }}'

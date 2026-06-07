@@ -1,0 +1,105 @@
+# Phase 1 internal stack — APP tier only.
+# Engines run on separate hosts (VLAN 30) and are referenced as upstreams in
+# litellm/config.yaml via ENGINE_*_BASE. A local engine for single-box testing
+# is included, commented, at the bottom.
+#
+# Security posture: only Caddy publishes a host port (:443), and that port is
+# reachable only over LAN/WireGuard until public ingress (Tier C) is enabled.
+
+name: llm-gateway
+
+networks:
+  edge:        # Caddy <-> app services
+  internal:    # app services <-> data stores (no host exposure)
+
+volumes:
+  caddy_data:
+  caddy_config:
+  postgres_data:
+  redis_data:
+  openwebui_data:
+
+services:
+  caddy:
+    build: ./caddy            # custom image w/ DNS-01 plugin (see caddy/Dockerfile)
+    restart: unless-stopped
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    ports:
+      # Bind to the LAN/WireGuard interface only. Replace 10.20.0.10 with the
+      # Docker host's LAN IP. Do NOT use 0.0.0.0 until Tier C + pen-test gate.
+      - "10.20.0.10:443:443"
+    env_file: [.env]
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [edge, internal]
+    depends_on: [litellm, authelia]
+
+  authelia:
+    image: authelia/authelia:4.38   # PIN + validate config against this version
+    restart: unless-stopped
+    env_file: [.env]
+    volumes:
+      - ./authelia:/config:ro
+    networks: [edge, internal]
+    depends_on: [redis]
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable   # pin a digest in production
+    restart: unless-stopped
+    env_file: [.env]
+    command: ["--config", "/app/config.yaml"]
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    networks: [edge, internal]
+    depends_on: [postgres]
+    # No host port: reachable only via Caddy.
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    restart: unless-stopped
+    environment:
+      # Point the UI at LiteLLM; OWUI holds one service key server-side.
+      - OPENAI_API_BASE_URL=http://litellm:4000/v1
+      - OPENAI_API_KEY=${LITELLM_MASTER_KEY}
+      # Trust Authelia forward-auth headers (OWUI behind trusted proxy only).
+      - WEBUI_AUTH_TRUSTED_EMAIL_HEADER=Remote-Email
+      - WEBUI_AUTH_TRUSTED_NAME_HEADER=Remote-Name
+    volumes:
+      - openwebui_data:/app/backend/data
+    networks: [edge, internal]
+    depends_on: [litellm]
+
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${AUTHELIA_REDIS_PASSWORD}"]
+    volumes:
+      - redis_data:/data
+    networks: [internal]
+
+  # --- Optional: local engine for single-box smoke testing only ---
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   restart: unless-stopped
+  #   volumes: [ ./models:/root/.ollama ]   # ollama-managed store
+  #   networks: [internal]
+  #   # Then set ENGINE_GPU_BASE=http://ollama:11434 and use ollama_chat/ models.
